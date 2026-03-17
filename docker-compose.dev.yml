@@ -1,0 +1,38 @@
+# Development overrides — mounts source code for hot reload
+version: "3.9"
+
+services:
+  backend:
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --log-level debug
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ${HOST_PHOTOS_DIR}:/mnt/photos:ro
+      - thumbnails_cache:/data/thumbnails
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    command: npm run dev
+    environment:
+      - API_TARGET=http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  thumbnails_cache:
+    driver: local

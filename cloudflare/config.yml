@@ -1,0 +1,20 @@
+# Cloudflare Tunnel configuration
+# See: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+#
+# Setup steps:
+# 1. Install cloudflared: brew install cloudflared (or apt install cloudflared)
+# 2. Login: cloudflared tunnel login
+# 3. Create tunnel: cloudflared tunnel create photosapp
+# 4. Copy tunnel ID and set CLOUDFLARE_TUNNEL_TOKEN in .env
+# 5. Run: docker compose --profile tunnel up -d
+#
+# The tunnel token (from Cloudflare Zero Trust dashboard) encodes all config.
+# Alternatively, use this config file with `cloudflared tunnel run`:
+
+tunnel: photosapp
+credentials-file: /root/.cloudflared/credentials.json
+
+ingress:
+  - hostname: photos.yourdomain.com
+    service: http://frontend:80
+  - service: http_status:404

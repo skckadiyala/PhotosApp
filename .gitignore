@@ -1,0 +1,15 @@
+# PhotosApp
+node_modules/
+dist/
+.env
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+backups/
+postgres_data/
+redis_data/
+thumbnails_cache/
+.DS_Store
