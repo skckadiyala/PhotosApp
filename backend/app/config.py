@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Paths
     photos_dir: str = "/mnt/photos"
     thumbnails_dir: str = "/data/thumbnails"
+    host_photos_dir: str = ""  # actual path on the host machine, passed in via HOST_PHOTOS_DIR env var
 
     # Celery
     celery_broker_url: str = "redis://localhost:6379/0"
@@ -32,11 +33,13 @@ class Settings(BaseSettings):
     thumb_md: int = 800
     thumb_lg: int = 1600
 
-    # Supported image extensions
+    # Supported image and video extensions
     supported_extensions: set[str] = {
         ".jpg", ".jpeg", ".png", ".gif", ".bmp",
         ".webp", ".tiff", ".tif", ".heic", ".heif",
         ".raw", ".cr2", ".nef", ".arw", ".dng",
+        # Video
+        ".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm", ".3gp",
     }
 
     @property

@@ -6,14 +6,18 @@ import AuthImage from '../common/AuthImage';
 interface Props {
   photo: Photo;
   onClick: () => void;
+  /** Fills its parent container - used by the justified grid. */
+  fill?: boolean;
 }
 
-export default function PhotoCard({ photo, onClick }: Props) {
+export default function PhotoCard({ photo, onClick, fill = false }: Props) {
   const [loaded, setLoaded] = useState(false);
 
   return (
     <div
-      className="photo-grid-item relative aspect-square bg-gray-200 cursor-pointer"
+      className={`photo-grid-item relative cursor-pointer overflow-hidden bg-gray-200 ${
+        fill ? 'h-full w-full' : 'aspect-square'
+      }`}
       onClick={onClick}
     >
       {!loaded && (

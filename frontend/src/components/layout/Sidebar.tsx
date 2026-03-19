@@ -4,10 +4,10 @@ import { clsx } from 'clsx';
 
 const navItems = [
   { to: '/timeline', label: 'Timeline', icon: '📷' },
+  { to: '/videos', label: 'Videos', icon: '🎬' },
   { to: '/albums', label: 'Albums', icon: '📁' },
   { to: '/people', label: 'People', icon: '👤' },
   { to: '/map', label: 'Map', icon: '🗺️' },
-  { to: '/search', label: 'Search', icon: '🔍' },
   { to: '/favorites', label: 'Favorites', icon: '❤️' },
 ];
 

@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { fetchAlbum, addPhotosToAlbum, updateAlbum } from '../api/albums';
 import { fetchPhotos, getThumbnailUrl } from '../api/photos';
+import { useScrollRestore } from '../hooks/useScrollRestore';
 import PhotoCard from '../components/photos/PhotoCard';
 import AuthImage from '../components/common/AuthImage';
 import Spinner from '../components/common/Spinner';
@@ -62,6 +63,8 @@ export default function AlbumDetailPage() {
       return next;
     });
   };
+
+  useScrollRestore('photo', isLoading);
 
   if (isLoading) return <Spinner />;
   if (!data) return <EmptyState title="Album not found" icon="📁" />;
@@ -200,11 +203,14 @@ export default function AlbumDetailPage() {
       ) : (
         <div className="grid grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
           {photos.map((photo) => (
-            <PhotoCard
-              key={photo.id}
-              photo={photo}
-              onClick={() => navigate(`/photo/${photo.id}`)}
-            />
+            <div key={photo.id} id={`photo-${photo.id}`}>
+              <PhotoCard
+                photo={photo}
+                onClick={() => navigate(`/photo/${photo.id}`, {
+                    state: { photoIds: photos.map((p) => p.id), returnTo: `/albums/${id}` },
+                  })}
+              />
+            </div>
           ))}
         </div>
       )}

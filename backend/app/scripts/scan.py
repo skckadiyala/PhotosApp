@@ -7,8 +7,6 @@ Run via:
     # or inside Docker:
     docker compose exec backend python -m app.scripts.scan
 """
-import sys
-
 from app.services.scanner import main
 
 if __name__ == "__main__":

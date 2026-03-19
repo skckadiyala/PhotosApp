@@ -2,6 +2,7 @@ export interface Photo {
   id: string;
   file_name: string;
   mime_type: string;
+  file_size: number | null;
   width: number | null;
   height: number | null;
   taken_at: string | null;
@@ -12,6 +13,7 @@ export interface Photo {
 
 export interface PhotoDetail extends Photo {
   file_path: string;
+  host_file_path: string | null;
   file_size: number;
   file_hash: string | null;
   camera_make: string | null;

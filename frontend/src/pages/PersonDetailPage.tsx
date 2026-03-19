@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { usePerson, usePersonPhotos } from '../hooks/useFaces';
+import { useScrollRestore } from '../hooks/useScrollRestore';
 import { renamePerson, assignFace, getFaceThumbnailUrl } from '../api/faces';
 import PhotoCard from '../components/photos/PhotoCard';
 import FaceThumbnail from '../components/photos/FaceThumbnail';
@@ -16,6 +17,8 @@ export default function PersonDetailPage() {
   const queryClient = useQueryClient();
   const { data: person, isLoading: personLoading } = usePerson(id);
   const { data: photos, isLoading: photosLoading } = usePersonPhotos(id);
+
+  useScrollRestore('photo', photosLoading);
   const [editing, setEditing] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [showFaces, setShowFaces] = useState(false);
@@ -166,11 +169,14 @@ export default function PersonDetailPage() {
       ) : (
         <div className="grid grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
           {photos.map((photo) => (
-            <PhotoCard
-              key={photo.id}
-              photo={photo}
-              onClick={() => navigate(`/photo/${photo.id}`)}
-            />
+            <div key={photo.id} id={`photo-${photo.id}`}>
+              <PhotoCard
+                photo={photo}
+                onClick={() => navigate(`/photo/${photo.id}`, {
+                    state: { photoIds: photos.map((p) => p.id), returnTo: `/people/${id}` },
+                  })}
+              />
+            </div>
           ))}
         </div>
       )}

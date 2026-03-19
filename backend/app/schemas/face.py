@@ -58,16 +58,3 @@ class ClusterRequest(BaseModel):
     """Optional tuning params for re-clustering."""
     eps: float = 0.5
     min_samples: int = 2
-
-
-class FaceDetectionStats(BaseModel):
-    total_processed: int
-    total_faces: int
-    errors: int
-
-
-class ClusterStats(BaseModel):
-    total_faces: int
-    clusters_created: int
-    noise_faces: int
-    clusters_updated: int = 0

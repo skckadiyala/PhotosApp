@@ -110,8 +110,6 @@ async def get_map_clusters(
         label = None
         if loc_row and loc_row.city:
             label = f"{loc_row.city}, {loc_row.country}" if loc_row.country else loc_row.city
-        if loc_row and loc_row.city:
-            label = f"{loc_row.city}, {loc_row.country}" if loc_row.country else loc_row.city
 
         clusters.append(MapCluster(
             lat=float(row.lat),

@@ -23,7 +23,6 @@ from app.models.person import Person
 from app.models.photo import Photo
 from app.models.user import User
 from app.schemas.face import (
-    ClusterRequest,
     FaceBase,
     FaceAssignRequest,
     MergePeopleRequest,
@@ -153,6 +152,33 @@ async def trigger_face_detection(
 
     background_tasks.add_task(process_all_photos, user_id=str(user.id))
     return {"message": "Face detection started", "status": "running"}
+
+
+@router.delete("/{face_id}")
+async def delete_face(
+    face_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Delete a single face record. Cleans up the owning Person if no faces remain."""
+    face = await db.get(Face, face_id)
+    if not face:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Face not found")
+
+    person_id = face.person_id
+    await db.delete(face)
+    await db.flush()
+
+    # Clean up orphaned person
+    if person_id:
+        remaining = await db.scalar(select(func.count(Face.id)).where(Face.person_id == person_id))
+        if remaining == 0:
+            person = await db.get(Person, person_id)
+            if person:
+                await db.delete(person)
+
+    await db.commit()
+    return {"message": "Face deleted"}
 
 
 @router.put("/{face_id}/assign")

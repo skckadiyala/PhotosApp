@@ -1,5 +1,8 @@
+import re
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_, select
+from sqlalchemy import and_, extract, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -23,21 +26,66 @@ async def search_photos(
     person_id: str | None = None,
     tag: str | None = None,
     camera: str | None = None,
-    cursor: str | None = None,
-    limit: int = Query(default=50, le=200),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=100, le=500),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     query = select(Photo).where(Photo.user_id == user.id, Photo.is_hidden.is_(False))
 
     if q:
-        pattern = f"%{q}%"
-        query = query.where(
-            or_(
-                Photo.file_name.ilike(pattern),
-                Photo.camera_model.ilike(pattern),
-            )
-        )
+        q_stripped = q.strip()
+
+        # If q looks like a bare year (e.g. "2025") → filter by year
+        if re.fullmatch(r'(19|20)\d{2}', q_stripped):
+            query = query.where(extract('year', Photo.taken_at) == int(q_stripped))
+        else:
+            # If q looks like "Month YYYY" or "Mon YYYY" (e.g. "January 2025", "Jan 2025")
+            dt_match = None
+            for fmt in ('%B %Y', '%b %Y'):
+                try:
+                    dt_match = datetime.strptime(q_stripped, fmt)
+                    break
+                except ValueError:
+                    pass
+
+            if dt_match is not None:
+                query = query.where(
+                    and_(
+                        extract('year', Photo.taken_at) == dt_match.year,
+                        extract('month', Photo.taken_at) == dt_match.month,
+                    )
+                )
+            else:
+                # Full text search: filename, camera, person name, location
+                pattern = f"%{q}%"
+                person_photo_ids = (
+                    select(Face.photo_id)
+                    .join(Person, Person.id == Face.person_id)
+                    .where(Person.name.ilike(pattern))
+                    .scalar_subquery()
+                )
+                location_photo_ids = (
+                    select(Photo.id)
+                    .join(Location, Photo.location_id == Location.id)
+                    .where(
+                        or_(
+                            Location.city.ilike(pattern),
+                            Location.country.ilike(pattern),
+                            Location.state.ilike(pattern),
+                            Location.formatted.ilike(pattern),
+                        )
+                    )
+                    .scalar_subquery()
+                )
+                query = query.where(
+                    or_(
+                        Photo.file_name.ilike(pattern),
+                        Photo.camera_model.ilike(pattern),
+                        Photo.id.in_(person_photo_ids),
+                        Photo.id.in_(location_photo_ids),
+                    )
+                )
 
     if from_date:
         query = query.where(Photo.taken_at >= from_date)
@@ -50,6 +98,7 @@ async def search_photos(
                 Location.city.ilike(f"%{location}%"),
                 Location.country.ilike(f"%{location}%"),
                 Location.state.ilike(f"%{location}%"),
+                Location.formatted.ilike(f"%{location}%"),
             )
         )
 
@@ -66,9 +115,19 @@ async def search_photos(
     if camera:
         query = query.where(Photo.camera_model.ilike(f"%{camera}%"))
 
-    query = query.order_by(Photo.taken_at.desc().nullslast()).limit(limit)
+    query = query.order_by(Photo.taken_at.desc().nullslast())
+
+    # Count total matching rows before pagination
+    count_q = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_q)).scalar() or 0
+
+    offset = (page - 1) * limit
+    query = query.offset(offset).limit(limit)
     result = await db.execute(query)
-    return {"items": result.scalars().all()}
+    items = list(result.scalars().all())
+    total_pages = (total + limit - 1) // limit if total > 0 else 1
+
+    return {"items": items, "page": page, "limit": limit, "total": total, "total_pages": total_pages}
 
 
 @router.get("/suggestions")

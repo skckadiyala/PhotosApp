@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { fetchMapClusters, fetchMapPhotos, fetchLocations } from '../api/map';
-import type { MapCluster, MapPhoto, LocationItem } from '../api/map';
+import { fetchMapClusters, fetchMapPhotos } from '../api/map';
+import type { MapCluster, MapPhoto } from '../api/map';
 
 export function useMapClusters(zoom: number, bounds?: { sw_lat: number; sw_lng: number; ne_lat: number; ne_lng: number }) {
   return useQuery<MapCluster[]>({
@@ -22,9 +22,4 @@ export function useMapPhotos(lat: number, lng: number, radius = 50) {
   });
 }
 
-export function useLocations() {
-  return useQuery<LocationItem[]>({
-    queryKey: ['locations'],
-    queryFn: fetchLocations,
-  });
-}
+

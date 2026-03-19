@@ -40,7 +40,8 @@ async def add_favorite(
     if not photo:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     photo.is_favorite = True
-    await db.flush()
+    await db.commit()
+    await db.refresh(photo)
     return photo
 
 
@@ -55,4 +56,4 @@ async def remove_favorite(
     if not photo:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found")
     photo.is_favorite = False
-    await db.flush()
+    await db.commit()

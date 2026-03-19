@@ -29,13 +29,16 @@ settings = get_settings()
 # Minimum face bounding-box dimension in pixels.
 # Detections smaller than this are almost always false positives caused by
 # texture patterns in landscapes (rocks, foliage, cloud formations, etc.).
-MIN_FACE_PX = 80
+MIN_FACE_PX = 100
 
 
 def _has_valid_landmarks(lm: dict) -> bool:
-    """Return True only when both eyes are detectable — the strongest signal
-    that a detected region is an actual face rather than a landscape pattern."""
-    return "left_eye" in lm and "right_eye" in lm
+    """Return True only when both eyes AND a nose feature are detectable —
+    the strongest signal that a detected region is an actual face rather than
+    a landscape texture or circular object."""
+    has_eyes = "left_eye" in lm and "right_eye" in lm
+    has_nose = "nose_bridge" in lm or "nose_tip" in lm
+    return has_eyes and has_nose
 
 
 def detect_faces_in_photo(photo_path: str) -> list[dict]:
@@ -168,15 +171,11 @@ def process_all_photos(user_id: str | None = None) -> dict:
     stats = {"total_processed": 0, "total_faces": 0, "errors": 0}
 
     try:
-        # Find photos with no faces detected yet
-        # Left join faces and filter where face.id IS NULL
-        from sqlalchemy import and_, outerjoin
-        from sqlalchemy.orm import aliased
-
         query = (
             select(Photo)
             .outerjoin(Face, Photo.id == Face.photo_id)
             .where(Face.id.is_(None))
+            .where(~Photo.mime_type.like("video/%"))
         )
         if user_id:
             query = query.where(Photo.user_id == user_id)
@@ -344,6 +343,65 @@ def purge_faces_for_filenames(filenames: list[str]) -> dict:
     return stats
 
 
+def reprocess_faces_for_filenames(filenames: list[str]) -> dict:
+    """
+    Purge existing Face records for the given filenames then re-run
+    face detection on those photos.  Use this to restore real faces that
+    were accidentally purged, or to reprocess a specific image after a
+    detection-parameter change.
+
+    Args:
+        filenames: List of image filenames, e.g. ["IMG_2367.jpeg"]
+
+    Returns:
+        dict: {matched_photos, old_faces_deleted, new_faces_added, errors}
+    """
+    db = get_sync_db()
+    stats = {"matched_photos": 0, "old_faces_deleted": 0, "new_faces_added": 0, "errors": 0}
+    lower_names = [n.lower() for n in filenames]
+
+    try:
+        all_photos = db.execute(select(Photo)).scalars().all()
+        targets = [
+            p for p in all_photos
+            if any(p.file_path.lower().endswith(name) for name in lower_names)
+        ]
+
+        if not targets:
+            logger.warning("No photos matched filenames: %s", filenames)
+            return stats
+
+        stats["matched_photos"] = len(targets)
+
+        from sqlalchemy import delete as sql_delete
+        result = db.execute(sql_delete(Face).where(Face.photo_id.in_([p.id for p in targets])))
+        stats["old_faces_deleted"] = result.rowcount
+        db.commit()
+
+        for photo in targets:
+            abs_path = os.path.join(settings.photos_dir, photo.file_path)
+            if not os.path.isfile(abs_path):
+                logger.warning("Photo file missing: %s", abs_path)
+                stats["errors"] += 1
+                continue
+            try:
+                n = process_photo_faces(str(photo.id), abs_path, db_session=db)
+                stats["new_faces_added"] += n
+                logger.info("Re-detected %d face(s) in %s", n, photo.file_path)
+            except Exception:
+                logger.error("Failed to reprocess %s", photo.file_path, exc_info=True)
+                stats["errors"] += 1
+
+    except Exception:
+        db.rollback()
+        logger.error("Failed to reprocess files %s", filenames, exc_info=True)
+        raise
+    finally:
+        db.close()
+
+    return stats
+
+
 def main():
     """CLI entry point for face detection."""
     import argparse
@@ -366,11 +424,17 @@ def main():
     purge_p = sub.add_parser("purge", help="Remove false-positive faces for specific filenames")
     purge_p.add_argument("filenames", nargs="+", help="Image filenames to purge (e.g. IMG_0638.jpeg)")
 
+    reprocess_file_p = sub.add_parser("reprocess-file", help="Re-run detection on specific filenames (purge then re-detect)")
+    reprocess_file_p.add_argument("filenames", nargs="+", help="Image filenames to reprocess (e.g. IMG_2367.jpeg)")
+
     args = parser.parse_args()
 
     if args.cmd == "purge":
         stats = purge_faces_for_filenames(args.filenames)
         print(f"\nPurge results: {stats}")
+    elif args.cmd == "reprocess-file":
+        stats = reprocess_faces_for_filenames(args.filenames)
+        print(f"\nReprocess-file results: {stats}")
     elif args.cmd == "reprocess":
         stats = reprocess_all_photos()
         print(f"\nReprocess results: {stats}")

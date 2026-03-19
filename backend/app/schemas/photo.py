@@ -8,6 +8,7 @@ class PhotoBase(BaseModel):
     id: uuid.UUID
     file_name: str
     mime_type: str
+    file_size: int | None = None
     width: int | None = None
     height: int | None = None
     taken_at: datetime | None = None
@@ -21,6 +22,7 @@ class PhotoBase(BaseModel):
 class PhotoDetail(PhotoBase):
     """Full photo object returned for single-photo views."""
     file_path: str
+    host_file_path: str | None = None  # absolute path on the host machine
     file_size: int
     file_hash: str
     camera_make: str | None = None

@@ -2,10 +2,8 @@ import api from './client';
 import type { Person, PersonDetail, Face } from '../types/face';
 import type { Photo } from '../types/photo';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
-
 export function getFaceThumbnailUrl(faceId: string, size: number = 200) {
-  return `${API_BASE}/faces/${faceId}/thumbnail?size=${size}`;
+  return `/api/v1/faces/${faceId}/thumbnail?size=${size}`;
 }
 
 export async function fetchPeople(sort?: string): Promise<Person[]> {
@@ -38,18 +36,8 @@ export async function assignFace(faceId: string, body: { person_id?: string; new
   return data;
 }
 
-export async function mergePeople(keepId: string, mergeId: string) {
-  const { data } = await api.post('/faces/merge', { person_id_keep: keepId, person_id_merge: mergeId });
-  return data;
-}
-
-export async function triggerDetection() {
-  const { data } = await api.post('/faces/detect');
-  return data;
-}
-
-export async function triggerClustering(eps = 0.5, minSamples = 2) {
-  const { data } = await api.post('/faces/cluster', { eps, min_samples: minSamples });
+export async function deleteFace(faceId: string): Promise<{ message: string }> {
+  const { data } = await api.delete(`/faces/${faceId}`);
   return data;
 }
 

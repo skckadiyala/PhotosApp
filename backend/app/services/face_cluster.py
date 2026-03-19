@@ -7,11 +7,10 @@ that are close neighbours.  This produces significantly better grouping
 than single-pass DBSCAN.
 """
 import logging
-import uuid
 
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.core.database import get_sync_db
 from app.models.face import Face
@@ -146,8 +145,9 @@ def cluster_faces(user_id: str) -> dict:
         )
 
         # --- Persist results ---
-        # Capture existing names BEFORE clearing assignments, keyed by
-        # a representative face embedding so they can be re-matched later.
+        # Capture existing names BEFORE clearing assignments, keyed by centroid
+        # of the faces currently linked to each named person.  Falls back to any
+        # face embedding when only one face is linked.
         existing_people = db.execute(
             select(Person).where(Person.user_id == user_id)
         ).scalars().all()
@@ -155,11 +155,12 @@ def cluster_faces(user_id: str) -> dict:
         old_names: dict[str, np.ndarray] = {}
         for person in existing_people:
             if person.name:
-                old_face = db.execute(
-                    select(Face).where(Face.person_id == person.id).limit(1)
-                ).scalar_one_or_none()
-                if old_face is not None:
-                    old_names[person.name] = np.array(old_face.embedding)
+                linked_faces = db.execute(
+                    select(Face).where(Face.person_id == person.id)
+                ).scalars().all()
+                if linked_faces:
+                    centroid = np.array([f.embedding for f in linked_faces]).mean(axis=0)
+                    old_names[person.name] = centroid
 
         # Now clear old person assignments and delete old Person records
         for face in face_rows:

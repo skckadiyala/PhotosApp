@@ -12,6 +12,7 @@ import MapPage from './pages/MapPage';
 import SearchPage from './pages/SearchPage';
 import FavoritesPage from './pages/FavoritesPage';
 import FaceConfirmPage from './pages/FaceConfirmPage';
+import VideosPage from './pages/VideosPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.accessToken);
@@ -31,6 +32,7 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Navigate to="/timeline" replace />} />
                 <Route path="/timeline" element={<PhotosPage />} />
+                <Route path="/videos" element={<VideosPage />} />
                 <Route path="/photo/:id" element={<PhotoDetailPage />} />
                 <Route path="/albums" element={<AlbumsPage />} />
                 <Route path="/albums/:id" element={<AlbumDetailPage />} />

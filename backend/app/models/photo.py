@@ -56,6 +56,7 @@ class Photo(Base, UUIDMixin, TimestampMixin):
     user: Mapped["User"] = relationship(back_populates="photos")  # noqa: F821
     faces: Mapped[list["Face"]] = relationship(back_populates="photo", cascade="all, delete-orphan")  # noqa: F821
     location: Mapped["Location | None"] = relationship(back_populates="photos")  # noqa: F821
+    tags: Mapped[list["PhotoTag"]] = relationship(back_populates="photo", cascade="save-update, merge")  # noqa: F821
 
     __table_args__ = (
         Index("idx_photos_user_taken", "user_id", "taken_at"),

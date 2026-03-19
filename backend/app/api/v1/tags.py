@@ -29,7 +29,6 @@ async def list_tags(
 @router.get("/{tag_id}/photos")
 async def get_photos_by_tag(
     tag_id: uuid.UUID,
-    cursor: str | None = None,
     limit: int = Query(default=50, le=200),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),

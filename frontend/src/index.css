@@ -13,3 +13,21 @@
     @apply overflow-hidden rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer;
   }
 }
+
+@keyframes slide-in-from-right {
+  from { opacity: 0; transform: translateX(60px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slide-in-from-left {
+  from { opacity: 0; transform: translateX(-60px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.photo-slide-next {
+  animation: slide-in-from-right 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+.photo-slide-prev {
+  animation: slide-in-from-left 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}

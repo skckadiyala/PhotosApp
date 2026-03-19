@@ -58,9 +58,6 @@ class PhotoEventHandler(FileSystemEventHandler):
             # Import here to avoid circular imports
             from app.workers.pipeline import dispatch_photo_pipeline
 
-            # Note: In production, we'd first insert a DB record, then dispatch processing.
-            # For the watcher, we queue a task that handles DB insertion + pipeline dispatch.
-            from app.workers.tasks.metadata import extract_metadata
             dispatch_photo_pipeline(photo_id="pending", file_path=rel_path)
 
         except Exception:
