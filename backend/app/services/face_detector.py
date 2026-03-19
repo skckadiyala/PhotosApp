@@ -18,9 +18,10 @@ import logging
 import os
 import time
 
-import numpy as np
-from deepface import DeepFace
-from PIL import Image, ImageOps
+# DeepFace, NumPy and PIL are imported lazily (inside functions) so that
+# TensorFlow and the ArcFace/RetinaFace model weights are NOT loaded into
+# memory at server startup.  They are only pulled in the first time face
+# detection is actually requested, saving ~2-3 GiB of RAM on idle servers.
 from sqlalchemy import select
 
 from app.config import get_settings
@@ -54,13 +55,16 @@ MIN_ASPECT_RATIO = 0.45
 MAX_ASPECT_RATIO = 2.20
 
 
-def _represent_with_fallback(image: np.ndarray) -> list | None:
+def _represent_with_fallback(image) -> list | None:
     """
     Call DeepFace.represent with the primary detector and, if the primary
     backend finds no faces or fails to initialise, retry with opencv.
 
     Returns the raw DeepFace results list, or None if no faces were detected.
     """
+    # Lazy import — keeps TensorFlow out of memory until face detection runs.
+    from deepface import DeepFace  # noqa: PLC0415
+
     last_error = None
     for backend in (DETECTOR_BACKEND, "opencv"):
         try:
@@ -102,6 +106,9 @@ def detect_faces_in_photo(photo_path: str) -> list[dict]:
           - embedding: 512-d numpy array (L2-normalised ArcFace embedding)
     """
     # Apply EXIF orientation so portrait photos are upright before detection.
+    import numpy as np  # noqa: PLC0415
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
     pil_img = Image.open(photo_path)
     pil_img = ImageOps.exif_transpose(pil_img).convert("RGB")
     image = np.array(pil_img)

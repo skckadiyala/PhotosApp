@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import PhotoCard from './PhotoCard';
 import type { Photo } from '../../types/photo';
+import { useUIStore } from '../../stores/uiStore';
 
 interface Props {
   photos: Photo[];
@@ -24,6 +25,10 @@ interface Props {
 export default function JustifiedPhotoGrid({ photos, returnTo, rowHeight = 180, navPhotoIds }: Props) {
   const navigate = useNavigate();
   const photoIds = navPhotoIds ?? photos.map((p) => p.id);
+  const selectionMode = useUIStore((s) => s.selectionMode);
+  const selectedPhotoIds = useUIStore((s) => s.selectedPhotoIds);
+  const toggleSelect = useUIStore((s) => s.toggleSelect);
+  const enterSelectionMode = useUIStore((s) => s.enterSelectionMode);
 
   return (
     <div className="flex flex-wrap" style={{ gap: '2px' }}>
@@ -38,6 +43,10 @@ export default function JustifiedPhotoGrid({ photos, returnTo, rowHeight = 180, 
             <PhotoCard
               photo={photo}
               fill
+              selected={selectedPhotoIds.has(photo.id)}
+              selectionMode={selectionMode}
+              onSelect={() => toggleSelect(photo.id)}
+              onEnterSelect={() => enterSelectionMode(photo.id)}
               onClick={() =>
                 navigate(`/photo/${photo.id}`, {
                   state: { photoIds, returnTo },

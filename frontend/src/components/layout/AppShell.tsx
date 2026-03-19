@@ -3,6 +3,7 @@ import Sidebar from './Sidebar';
 import Header from './Header';
 import { useUIStore } from '../../stores/uiStore';
 import { clsx } from 'clsx';
+import SelectionBar from '../photos/SelectionBar';
 
 interface Props {
   children: ReactNode;
@@ -23,6 +24,7 @@ export default function AppShell({ children }: Props) {
         <Header />
         <main className="flex-1 overflow-y-auto p-4">{children}</main>
       </div>
+      <SelectionBar />
     </div>
   );
 }

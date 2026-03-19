@@ -87,26 +87,35 @@ def scan_library(user_id: str, dry_run: bool = False) -> dict:
     db = get_sync_db()
 
     try:
-        # Pre-load existing hashes for fast dedup lookup
+        # Pre-load existing file paths AND hashes in a single query for fast
+        # O(1) dedup.  Checking path first avoids reading any file from disk
+        # for photos that are already indexed — critical for 100K+ libraries.
+        existing_paths: set[str] = set()
         existing_hashes: set[str] = set()
         result = db.execute(
-            select(Photo.file_hash).where(Photo.user_id == user_id)
+            select(Photo.file_path, Photo.file_hash).where(Photo.user_id == user_id)
         )
         for row in result:
-            existing_hashes.add(row[0])
-        logger.info("Found %d existing photos in database", len(existing_hashes))
+            existing_paths.add(row[0])
+            existing_hashes.add(row[1])
+        logger.info("Found %d existing photos in database", len(existing_paths))
 
         for i, abs_path in enumerate(files, 1):
             rel_path = os.path.relpath(abs_path, photos_dir)
             try:
-                # Compute hash
+                # Fast path: file path already known — skip without any disk I/O.
+                if rel_path in existing_paths:
+                    stats["skipped_existing"] += 1
+                    continue
+
+                # New path — compute hash to detect renamed/moved duplicates.
                 file_hash = compute_file_hash(abs_path)
 
-                # Skip if already indexed
+                # Skip if already indexed under a different path (moved file).
                 if file_hash in existing_hashes:
                     stats["skipped_existing"] += 1
                     if i % 100 == 0:
-                        logger.info("[%d/%d] Skipping (exists): %s", i, total_found, rel_path)
+                        logger.info("[%d/%d] Skipping (moved/renamed): %s", i, total_found, rel_path)
                     continue
 
                 # Extract EXIF metadata

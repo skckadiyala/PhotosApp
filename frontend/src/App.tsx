@@ -2,7 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
 import AppShell from './components/layout/AppShell';
 import LoginPage from './pages/LoginPage';
-import PhotosPage from './pages/PhotosPage';
+import LibraryPage from './pages/LibraryPage';
 import PhotoDetailPage from './pages/PhotoDetailPage';
 import AlbumsPage from './pages/AlbumsPage';
 import AlbumDetailPage from './pages/AlbumDetailPage';
@@ -30,8 +30,10 @@ export default function App() {
           <ProtectedRoute>
             <AppShell>
               <Routes>
-                <Route path="/" element={<Navigate to="/timeline" replace />} />
-                <Route path="/timeline" element={<PhotosPage />} />
+                <Route path="/" element={<Navigate to="/library" replace />} />
+                <Route path="/library" element={<LibraryPage />} />
+                {/* Legacy redirect: old /timeline bookmarks go to library */}
+                <Route path="/timeline" element={<Navigate to="/library" replace />} />
                 <Route path="/videos" element={<VideosPage />} />
                 <Route path="/photo/:id" element={<PhotoDetailPage />} />
                 <Route path="/albums" element={<AlbumsPage />} />

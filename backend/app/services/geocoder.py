@@ -100,8 +100,15 @@ def _get_or_create_location(db: Session, lat: float, lng: float) -> Location:
     return loc
 
 
-def geocode_all_photos(user_id: str | None = None) -> dict:
-    """Reverse-geocode all photos that have GPS but no location_id."""
+def geocode_all_photos(user_id: str | None = None, max_batch: int | None = None) -> dict:
+    """Reverse-geocode photos that have GPS but no location_id.
+
+    Args:
+        user_id: Restrict to this user's photos (None = all users).
+        max_batch: Maximum number of photos to geocode in this call.
+                   Useful on startup to avoid blocking for hours
+                   (Nominatim rate-limits to 1 req/s).
+    """
     db = get_sync_db()
     try:
         query = (
@@ -114,6 +121,8 @@ def geocode_all_photos(user_id: str | None = None) -> dict:
         )
         if user_id:
             query = query.where(Photo.user_id == uuid.UUID(user_id) if isinstance(user_id, str) else Photo.user_id == user_id)
+        if max_batch:
+            query = query.limit(max_batch)
 
         photos = db.execute(query).scalars().all()
         logger.info("Geocoding %d photos with GPS but no location...", len(photos))

@@ -29,7 +29,11 @@ async def lifespan(app: FastAPI):
     logger.info("Photos dir: %s", settings.photos_dir)
     logger.info("Thumbnails dir: %s", settings.thumbnails_dir)
 
-    # Auto-scan library on startup in a background thread
+    # Auto-scan library on startup in a background thread.
+    # Intentionally lightweight: only index new files and geocode a small
+    # batch. Face detection and clustering are NOT run on startup because
+    # they are too slow for large libraries (100K+ photos). Use the manual
+    # POST /api/v1/scan endpoint or the per-upload pipeline instead.
     def _startup_scan():
         try:
             logging.basicConfig(level=logging.INFO)
@@ -38,40 +42,10 @@ async def lifespan(app: FastAPI):
             stats = scan_library(user_id=user_id)
             logger.info("Startup scan results: %s", stats)
 
-            # Run face detection if new photos were indexed
-            if stats.get("new_indexed", 0) > 0:
-                from app.services.face_detector import process_all_photos
-                from app.services.face_cluster import cluster_faces
-                face_stats = process_all_photos(user_id=user_id)
-                logger.info("Startup face detection: %s", face_stats)
-                if face_stats.get("total_faces", 0) > 0:
-                    cluster_stats = cluster_faces(user_id)
-                    logger.info("Startup clustering: %s", cluster_stats)
-            else:
-                # Even if no new photos, re-cluster if faces are unlinked
-                # (can happen if previous reprocess ran without clustering)
-                from sqlalchemy import select as _select
-                from app.models.face import Face as _Face
-                from app.core.database import get_sync_db as _get_sync_db
-                db_check = _get_sync_db()
-                try:
-                    unlinked = db_check.execute(
-                        _select(_Face).where(
-                            _Face.person_id.is_(None),
-                            _Face.photo.has(user_id=user_id),
-                        ).limit(1)
-                    ).scalar_one_or_none()
-                finally:
-                    db_check.close()
-                if unlinked is not None:
-                    from app.services.face_cluster import cluster_faces
-                    logger.info("Found unlinked faces — running clustering")
-                    cluster_stats = cluster_faces(user_id)
-                    logger.info("Startup clustering (repair): %s", cluster_stats)
-
-            # Reverse-geocode photos with GPS but no location
+            # Reverse-geocode up to 200 photos per startup so we make
+            # incremental progress without blocking the server for hours.
             from app.services.geocoder import geocode_all_photos
-            geo_stats = geocode_all_photos(user_id=user_id)
+            geo_stats = geocode_all_photos(user_id=user_id, max_batch=200)
             logger.info("Startup geocoding: %s", geo_stats)
         except Exception:
             logger.error("Startup scan failed", exc_info=True)
