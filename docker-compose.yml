@@ -89,8 +89,6 @@ services:
       - thumbnails_cache:/data/thumbnails:ro
     ports:
       - "3000:80"
-    depends_on:
-      - backend
     networks:
       - photosapp_net
 
