@@ -1,10 +1,16 @@
 """
 Face clustering service.
 
-Uses Agglomerative Clustering with average linkage on face_recognition's
-128-d embeddings, followed by a centroid-merge pass to combine clusters
-that are close neighbours.  This produces significantly better grouping
-than single-pass DBSCAN.
+Uses Agglomerative Clustering with average linkage on DeepFace ArcFace
+512-d embeddings, followed by a centroid-merge pass to combine clusters
+that are close neighbours.
+
+Threshold notes for ArcFace 512-d (DeepFace unnormalised output):
+  DeepFace's represent() returns raw ArcFace vectors; norms ≈ 2–9 on this
+  dataset, so distances are NOT in the L2-normalised [0,2] range.
+  Empirically measured on 100 sampled faces:
+    min=1.30  p5=3.41  p25=4.30  median=4.93  p75=5.81  max=11.03
+  Same-person pairs sit in the low tail (< ~3.5); different people > ~4.0.
 """
 import logging
 
@@ -18,20 +24,20 @@ from app.models.person import Person
 
 logger = logging.getLogger(__name__)
 
-# ---------- Tunable thresholds ----------
-# Primary clustering — Euclidean distance threshold for agglomerative clustering.
-# face_recognition embeddings: same person typically < 0.6 Euclidean distance.
-# A slightly tighter threshold avoids merging different people.
-CLUSTER_THRESHOLD = 0.55
+# ---------- Tunable thresholds (ArcFace 512-d, DeepFace unnormalised) ----------
+# Primary clustering — catches same-person pairs (low tail of distance dist).
+# Empirical measurements: min=1.30, p5=3.41, p25=4.30, median=4.93.
+# 2.8 is conservative: grabs only very clear same-person pairs.
+CLUSTER_THRESHOLD = 2.8
 
-# Secondary merge — if two cluster centroids are within this Euclidean distance
-# AND the max pairwise distance between any two faces in the merged cluster stays
-# below MAX_INTRA_DISTANCE, they get merged.  This prevents chain-reaction merges.
-MERGE_THRESHOLD = 0.55
-MAX_INTRA_DISTANCE = 0.68
+# Secondary merge — centroids within this distance get merged if the merged
+# cluster's max pairwise distance stays below MAX_INTRA_DISTANCE.
+MERGE_THRESHOLD = 2.8
+MAX_INTRA_DISTANCE = 5.5
 
-# Faces with distance-to-centroid above this are flagged as "pending" for user review.
-CONFIRM_THRESHOLD = 0.32
+# Faces with distance-to-centroid above this are flagged "pending" for user review.
+# Lower = more faces go to review, fewer bad detections auto-confirmed as references.
+CONFIRM_THRESHOLD = 1.0
 
 
 def _merge_close_clusters(
@@ -188,12 +194,22 @@ def cluster_faces(user_id: str) -> dict:
             cluster_centroids[label] = embeddings[mask].mean(axis=0)
 
         # Assign faces and compute match_distance + status
+        # Track the best (closest-to-centroid) face per cluster for the avatar
+        best_face_per_cluster: dict[int, tuple[float, object]] = {}  # label -> (dist, face)
         for face, label, emb in zip(face_rows, labels, embeddings):
             face.person_id = cluster_map[label].id
             dist = float(np.linalg.norm(emb - cluster_centroids[label]))
             face.match_distance = dist
             # Faces far from centroid are flagged for user review
             face.status = "pending" if dist > CONFIRM_THRESHOLD else "confirmed"
+            # Track closest face for representative thumbnail
+            if label not in best_face_per_cluster or dist < best_face_per_cluster[label][0]:
+                best_face_per_cluster[label] = (dist, face)
+
+        # Set representative_face_id to the face closest to the cluster centroid
+        db.flush()  # ensure face PKs are set before referencing them
+        for label, (_, best_face) in best_face_per_cluster.items():
+            cluster_map[label].representative_face_id = best_face.id
 
         # Update face counts
         for label, person in cluster_map.items():

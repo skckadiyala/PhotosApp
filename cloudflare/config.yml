@@ -8,9 +8,7 @@
 # 4. Copy tunnel ID and set CLOUDFLARE_TUNNEL_TOKEN in .env
 # 5. Run: docker compose --profile tunnel up -d
 #
-# The tunnel token (from Cloudflare Zero Trust dashboard) encodes all config.
-# Alternatively, use this config file with `cloudflared tunnel run`:
-
+ 
 tunnel: photosapp
 credentials-file: /root/.cloudflared/credentials.json
 

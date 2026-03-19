@@ -1,10 +1,15 @@
 """
 Face detection & embedding service.
 
-Uses the `face_recognition` library (dlib-based) to:
-  1. Detect faces in a photo
-  2. Extract 128-d face embeddings
-  3. Store Face records in the database
+Uses DeepFace with ArcFace for:
+  1. Detecting faces in a photo (RetinaFace detector, opencv fallback)
+  2. Extracting 512-d ArcFace embeddings
+  3. Storing Face records in the database
+
+ArcFace (trained on MS-Celeb-1M, ~10 M identities) produces significantly
+more discriminative 512-d embeddings than the legacy dlib 128-d model,
+leading to better person clustering.  Model weights are downloaded
+automatically to ~/.deepface/weights/ on first use.
 
 Run face processing for all unprocessed photos:
     python -m app.services.face_detector
@@ -13,8 +18,8 @@ import logging
 import os
 import time
 
-import face_recognition
 import numpy as np
+from deepface import DeepFace
 from PIL import Image, ImageOps
 from sqlalchemy import select
 
@@ -26,19 +31,62 @@ from app.models.photo import Photo
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Minimum face bounding-box dimension in pixels.
-# Detections smaller than this are almost always false positives caused by
-# texture patterns in landscapes (rocks, foliage, cloud formations, etc.).
-MIN_FACE_PX = 100
+# ArcFace model name (512-d L2-normalised embeddings).
+RECOGNITION_MODEL = "ArcFace"
+
+# Primary face detector.  RetinaFace is state-of-the-art and handles small /
+# partially-occluded faces well.  We fall back to opencv if the model fails
+# to load (e.g. network issues during first-run weight download).
+DETECTOR_BACKEND = "retinaface"
+
+# Minimum face bounding-box dimension.  RetinaFace is reliable down to ~30 px;
+# 40 px avoids tiny false positives while keeping genuine small faces.
+MIN_FACE_PX = 40
+
+# Minimum RetinaFace detection confidence (0–1).  Detections below this are
+# likely to be false positives (background textures, body parts).
+# 0.75 keeps legitimate small/backlit/distant faces while filtering clear noise.
+MIN_FACE_CONFIDENCE = 0.75
+
+# Bounding-box aspect ratio guard: width/height must be within this range.
+# Values outside indicate a sideways crop or partial edge detection.
+MIN_ASPECT_RATIO = 0.45
+MAX_ASPECT_RATIO = 2.20
 
 
-def _has_valid_landmarks(lm: dict) -> bool:
-    """Return True only when both eyes AND a nose feature are detectable —
-    the strongest signal that a detected region is an actual face rather than
-    a landscape texture or circular object."""
-    has_eyes = "left_eye" in lm and "right_eye" in lm
-    has_nose = "nose_bridge" in lm or "nose_tip" in lm
-    return has_eyes and has_nose
+def _represent_with_fallback(image: np.ndarray) -> list | None:
+    """
+    Call DeepFace.represent with the primary detector and, if the primary
+    backend finds no faces or fails to initialise, retry with opencv.
+
+    Returns the raw DeepFace results list, or None if no faces were detected.
+    """
+    last_error = None
+    for backend in (DETECTOR_BACKEND, "opencv"):
+        try:
+            results = DeepFace.represent(
+                img_path=image,
+                model_name=RECOGNITION_MODEL,
+                detector_backend=backend,
+                enforce_detection=True,
+                align=True,
+            )
+            if results:
+                return results
+        except ValueError:
+            # No face found by this backend — try the next one.
+            last_error = "no face found"
+        except Exception as exc:
+            last_error = str(exc)
+            if backend != "opencv":
+                logger.debug(
+                    "detector_backend=%s failed (%s), falling back to opencv",
+                    backend, exc,
+                )
+            else:
+                logger.warning("opencv detection also failed: %s", exc)
+    logger.debug("No faces detected after all backends (%s)", last_error)
+    return None
 
 
 def detect_faces_in_photo(photo_path: str) -> list[dict]:
@@ -49,57 +97,48 @@ def detect_faces_in_photo(photo_path: str) -> list[dict]:
         photo_path: Absolute path to the image file.
 
     Returns:
-        List of dicts with keys: location (top, right, bottom, left), embedding (128-d numpy array)
+        List of dicts with keys:
+          - location: {top, right, bottom, left}
+          - embedding: 512-d numpy array (L2-normalised ArcFace embedding)
     """
-    # Load image and apply EXIF orientation so portrait photos are upright.
-    # face_recognition.load_image_file() does NOT respect EXIF rotation,
-    # causing sideways faces to be missed entirely.
+    # Apply EXIF orientation so portrait photos are upright before detection.
     pil_img = Image.open(photo_path)
     pil_img = ImageOps.exif_transpose(pil_img).convert("RGB")
     image = np.array(pil_img)
 
-    # Use upsample=1 only.  The previous upsample=2 fallback was far too
-    # aggressive: it detects texture patterns in landscapes (rocks, mountains,
-    # foliage) as faces, producing the false positives seen in IMG_0638.jpeg
-    # and DSC_8301.JPG.
-    locations = face_recognition.face_locations(image, model="hog", number_of_times_to_upsample=1)
-    if not locations:
+    results_raw = _represent_with_fallback(image)
+    if not results_raw:
         return []
 
-    # Filter 1 — minimum size.
-    # Tiny bounding boxes are virtually always texture false positives.
-    locations = [
-        loc for loc in locations
-        if (loc[2] - loc[0]) >= MIN_FACE_PX and (loc[1] - loc[3]) >= MIN_FACE_PX
-    ]
-    if not locations:
-        return []
+    faces = []
+    for r in results_raw:
+        area = r["facial_area"]
+        x, y, w, h = area["x"], area["y"], area["w"], area["h"]
 
-    # Filter 2 — landmark validation.
-    # Real faces have detectable eyes, nose and mouth; landscape patterns do not.
-    # We require at least both eyes to be present before accepting a detection.
-    landmarks_list = face_recognition.face_landmarks(image, face_locations=locations)
-    locations = [
-        loc for loc, lm in zip(locations, landmarks_list)
-        if _has_valid_landmarks(lm)
-    ]
-    if not locations:
-        return []
+        # Skip detections that are too small to be reliable.
+        if w < MIN_FACE_PX or h < MIN_FACE_PX:
+            continue
 
-    # Compute 128-d embeddings for each face.
-    # num_jitters=3 re-samples each face multiple times and averages,
-    # producing more stable embeddings for better clustering.
-    encodings = face_recognition.face_encodings(image, known_face_locations=locations, num_jitters=3)
+        # Skip detections with extreme aspect ratios (partial/cropped faces).
+        aspect = w / h if h > 0 else 0
+        if not (MIN_ASPECT_RATIO <= aspect <= MAX_ASPECT_RATIO):
+            logger.debug("Skipping face: aspect ratio %.2f out of range", aspect)
+            continue
 
-    results = []
-    for loc, enc in zip(locations, encodings):
-        top, right, bottom, left = loc
-        results.append({
-            "location": {"top": top, "right": right, "bottom": bottom, "left": left},
-            "embedding": enc,
+        # Skip low-confidence detections (RetinaFace returns a score 0–1).
+        confidence = r.get("face_confidence", 1.0)
+        if confidence < MIN_FACE_CONFIDENCE:
+            logger.debug("Skipping face: confidence %.3f < %.2f", confidence, MIN_FACE_CONFIDENCE)
+            continue
+
+        # facial_area uses (x=left, y=top, w, h); convert to the stored format.
+        faces.append({
+            "location": {"top": y, "right": x + w, "bottom": y + h, "left": x},
+            "embedding": np.array(r["embedding"]),
+            "confidence": confidence,
         })
 
-    return results
+    return faces
 
 
 def process_photo_faces(photo_id: str, photo_path: str, db_session=None) -> int:
@@ -134,7 +173,7 @@ def process_photo_faces(photo_id: str, photo_path: str, db_session=None) -> int:
                 bbox_bottom=loc["bottom"],
                 bbox_left=loc["left"],
                 embedding=embedding.tolist(),
-                confidence=1.0,
+                confidence=face_data.get("confidence", 1.0),
             )
             db.add(face)
 

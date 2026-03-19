@@ -71,7 +71,7 @@ export default function PersonDetailPage() {
           </svg>
         </button>
 
-        <FaceThumbnail personId={person.id} size={64} />
+        <FaceThumbnail personId={person.id} representativeFaceId={person.representative_face_id} size={64} />
 
         <div className="flex-1">
           {editing ? (

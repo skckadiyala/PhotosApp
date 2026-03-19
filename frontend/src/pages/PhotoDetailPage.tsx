@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
 import { usePhoto, usePhotos } from '../hooks/usePhotos';
-import { useFaces, usePeople } from '../hooks/useFaces';
+import { useFacesForPhoto, usePeople } from '../hooks/useFaces';
 import { useAlbums } from '../hooks/useAlbums';
 import { getOriginalUrl, getThumbnailUrl, scanPhotoFaces, addManualFace, toggleFavorite } from '../api/photos';
 import { addPhotosToAlbum } from '../api/albums';
@@ -25,7 +25,7 @@ export default function PhotoDetailPage() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const { data: photo, isLoading } = usePhoto(id);
-  const { data: faces } = useFaces();
+  const { data: photoFaces = [] } = useFacesForPhoto(id);
   const { data: albumsData } = useAlbums();
   const { data: peopleData } = usePeople();
   const { data: photosData } = usePhotos();
@@ -174,7 +174,7 @@ export default function PhotoDetailPage() {
       toast.success('Face region submitted — results will appear in a moment');
       exitDrawMode();
       setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ['faces'] });
+        queryClient.invalidateQueries({ queryKey: ['faces', 'photo', id] });
         queryClient.invalidateQueries({ queryKey: ['people'] });
       }, 5000);
     } catch {
@@ -196,10 +196,10 @@ export default function PhotoDetailPage() {
     setScanningFaces(true);
     try {
       await scanPhotoFaces(id);
-      toast.success('Face scan started — refresh in a moment to see results');
+      toast.success('Face scan started — results will appear in a moment');
       // Invalidate faces/people after a short delay to pick up new detections
       setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ['faces'] });
+        queryClient.invalidateQueries({ queryKey: ['faces', 'photo', id] });
         queryClient.invalidateQueries({ queryKey: ['people'] });
         queryClient.invalidateQueries({ queryKey: ['photo', id] });
       }, 5000);
@@ -261,6 +261,8 @@ export default function PhotoDetailPage() {
   const dragStart = useRef({ x: 0, y: 0 });
   const panAtDrag = useRef({ x: 0, y: 0 });
   const imageContainerRef = useRef<HTMLDivElement>(null);
+  // Ref for the outermost viewer div — used for the native wheel listener.
+  const viewerRef = useRef<HTMLDivElement>(null);
 
   // Reset zoom/pan whenever the photo changes
   useEffect(() => {
@@ -274,14 +276,26 @@ export default function PhotoDetailPage() {
   const handleZoomOut = () => setZoom((z) => { const nz = clampZoom(z - ZOOM_STEP); if (nz === 1) setPan({ x: 0, y: 0 }); return nz; });
   const handleZoomReset = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    setZoom((z) => {
-      const nz = clampZoom(z - Math.sign(e.deltaY) * ZOOM_STEP);
-      if (nz === 1) setPan({ x: 0, y: 0 });
-      return nz;
-    });
-  }, []);
+  // Native non-passive wheel listener so e.preventDefault() is guaranteed to
+  // work and zoom fires regardless of where the cursor is in the viewer
+  // (including over the prev/next nav arrows after clicking them).
+  useEffect(() => {
+    const container = viewerRef.current;
+    if (!container) return;
+    const onWheel = (e: WheelEvent) => {
+      // Let the info sidebar scroll naturally
+      if ((e.target as Element).closest?.('aside')) return;
+      if (drawMode) return;
+      e.preventDefault();
+      setZoom((z) => {
+        const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z - Math.sign(e.deltaY) * ZOOM_STEP));
+        if (nz === 1) setPan({ x: 0, y: 0 });
+        return nz;
+      });
+    };
+    container.addEventListener('wheel', onWheel, { passive: false });
+    return () => container.removeEventListener('wheel', onWheel);
+  }, [drawMode]);
 
   // Mouse pan
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -353,8 +367,6 @@ export default function PhotoDetailPage() {
     onError: () => toast.error('Failed to delete face'),
   });
 
-  const photoFaces = faces?.filter((f: Face) => f.photo_id === id) ?? [];
-
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       // Don't intercept arrow keys while typing in an input/textarea
@@ -398,7 +410,7 @@ export default function PhotoDetailPage() {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex bg-black">
+    <div ref={viewerRef} className="fixed inset-0 z-50 flex bg-black">
       {/* Top-left controls: hamburger + back */}
       <div className="absolute left-4 top-4 z-[60] flex items-center gap-2">
         <button
@@ -566,7 +578,6 @@ export default function PhotoDetailPage() {
       <div
         ref={imageContainerRef}
         className="relative flex-1 flex items-center justify-center overflow-hidden"
-        onWheel={drawMode ? undefined : handleWheel}
         onMouseDown={drawMode ? undefined : handleMouseDown}
         onMouseMove={drawMode ? undefined : handleMouseMove}
         onMouseUp={drawMode ? undefined : stopDrag}

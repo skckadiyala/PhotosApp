@@ -26,8 +26,8 @@ class Face(Base, UUIDMixin, TimestampMixin):
     bbox_bottom: Mapped[int] = mapped_column(Integer, nullable=False)
     bbox_left: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # 128-d face embedding from face_recognition (dlib)
-    embedding = mapped_column(Vector(128), nullable=False)
+    # 512-d face embedding from DeepFace/ArcFace
+    embedding = mapped_column(Vector(512), nullable=False)
 
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
 

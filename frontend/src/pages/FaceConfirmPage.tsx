@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchFacesToConfirm, confirmFace, getFaceThumbnailUrl, assignFace } from '../api/faces';
+import { fetchFacesToConfirm, confirmFace, getFaceThumbnailUrl, assignFace, deleteFace } from '../api/faces';
 import type { FaceConfirmItem } from '../api/faces';
 import AuthImage from '../components/common/AuthImage';
 import Spinner from '../components/common/Spinner';
@@ -32,6 +32,15 @@ export default function FaceConfirmPage() {
     mutationFn: ({ faceId, name }: { faceId: string; name: string }) =>
       assignFace(faceId, { new_person_name: name }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['faces-confirm'] });
+      queryClient.invalidateQueries({ queryKey: ['people'] });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (faceId: string) => deleteFace(faceId),
+    onSuccess: () => {
+      toast.success('Removed bad detection');
       queryClient.invalidateQueries({ queryKey: ['faces-confirm'] });
       queryClient.invalidateQueries({ queryKey: ['people'] });
     },
@@ -97,7 +106,7 @@ export default function FaceConfirmPage() {
   }
 
   const personLabel = current.person_name || 'this person';
-  const busy = confirmMutation.isPending || reassignMutation.isPending;
+  const busy = confirmMutation.isPending || reassignMutation.isPending || deleteMutation.isPending;
 
   return (
     <div className="mx-auto max-w-lg py-6">
@@ -183,6 +192,17 @@ export default function FaceConfirmPage() {
             className="flex-1 rounded-xl bg-red-500 py-3 text-base font-semibold text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
           >
             No
+          </button>
+        </div>
+
+        {/* "Not a face" delete option */}
+        <div className="px-6 pb-2">
+          <button
+            onClick={() => current && deleteMutation.mutate(current.id)}
+            disabled={busy}
+            className="w-full text-center text-xs text-gray-400 hover:text-red-500 transition-colors disabled:opacity-50"
+          >
+            🗑 Not a face / bad detection — remove
           </button>
         </div>
 

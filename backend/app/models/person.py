@@ -14,6 +14,10 @@ class Person(Base, UUIDMixin, TimestampMixin):
 
     name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     face_count: Mapped[int] = mapped_column(Integer, default=0)
+    # The face closest to the cluster centroid — used as the avatar thumbnail.
+    representative_face_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("faces.id", ondelete="SET NULL"), nullable=True
+    )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False

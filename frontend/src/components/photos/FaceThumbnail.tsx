@@ -1,25 +1,18 @@
-import { useQuery } from '@tanstack/react-query';
-import { fetchFaces, getFaceThumbnailUrl } from '../../api/faces';
+import { getFaceThumbnailUrl } from '../../api/faces';
 import AuthImage from '../common/AuthImage';
 
 interface Props {
   personId: string;
+  representativeFaceId?: string | null;
   size?: number;
 }
 
 /**
  * Shows a circular cropped face thumbnail for a person.
+ * Uses the representative_face_id (closest face to cluster centroid) when available.
  */
-export default function FaceThumbnail({ personId, size = 80 }: Props) {
-  const { data: faces } = useQuery({
-    queryKey: ['faces', { person_id: personId }],
-    queryFn: () => fetchFaces({ person_id: personId, limit: 1 }),
-    staleTime: 10 * 60 * 1000,
-  });
-
-  const face = faces?.[0];
-
-  if (!face) {
+export default function FaceThumbnail({ representativeFaceId, size = 80 }: Props) {
+  if (!representativeFaceId) {
     return (
       <div
         className="rounded-full bg-gray-200 flex items-center justify-center text-2xl"
@@ -36,7 +29,7 @@ export default function FaceThumbnail({ personId, size = 80 }: Props) {
       style={{ width: size, height: size }}
     >
       <AuthImage
-        src={getFaceThumbnailUrl(face.id, size * 2)}
+        src={getFaceThumbnailUrl(representativeFaceId, size * 2)}
         alt="Face"
         className="h-full w-full object-cover"
       />

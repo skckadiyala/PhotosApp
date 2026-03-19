@@ -26,6 +26,7 @@ class PersonBase(BaseModel):
     id: uuid.UUID
     name: str | None = None
     face_count: int = 0
+    representative_face_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 

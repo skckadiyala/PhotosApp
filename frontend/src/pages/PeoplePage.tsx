@@ -48,7 +48,7 @@ export default function PeoplePage() {
             onClick={() => navigate(`/people/${person.id}`)}
             className="group flex flex-col items-center text-center"
           >
-            <FaceThumbnail personId={person.id} size={96} />
+            <FaceThumbnail personId={person.id} representativeFaceId={person.representative_face_id} size={96} />
             {person.name && (
               <p className="mt-2 text-sm font-medium text-gray-900 group-hover:text-primary-600 truncate max-w-[96px]">
                 {person.name}

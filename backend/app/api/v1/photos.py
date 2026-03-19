@@ -309,14 +309,14 @@ async def scan_faces_for_photo(
                 if best_existing and best_iou >= IOU_THRESHOLD:
                     inherited_person_id = best_existing.person_id
                     used_existing_ids.add(best_existing.id)
-                new_records.append((loc, face_data["embedding"], inherited_person_id))
+                new_records.append((loc, face_data["embedding"], face_data.get("confidence", 1.0), inherited_person_id))
 
             # Step 4: delete ALL existing face records for this photo
             db_sync.execute(sql_delete(FaceModel).where(FaceModel.photo_id == photo_id_str))
             db_sync.commit()
 
             # Step 5: store newly detected faces (with inherited person_id where matched)
-            for loc, embedding, person_id in new_records:
+            for loc, embedding, confidence, person_id in new_records:
                 db_sync.add(FaceModel(
                     photo_id=photo_id_str,
                     bbox_top=loc["top"],
@@ -324,7 +324,7 @@ async def scan_faces_for_photo(
                     bbox_bottom=loc["bottom"],
                     bbox_left=loc["left"],
                     embedding=embedding.tolist(),
-                    confidence=1.0,
+                    confidence=confidence,
                     person_id=str(person_id) if person_id else None,
                 ))
             db_sync.commit()
@@ -381,9 +381,9 @@ async def add_manual_face(
     loc = (region.top, region.right, region.bottom, region.left)
 
     def _run():
-        import face_recognition
         import numpy as np
         from PIL import Image, ImageOps
+        from deepface import DeepFace
         from app.core.database import get_sync_db
         from app.models.face import Face as FaceModel
         from app.services.face_cluster import cluster_faces
@@ -393,21 +393,35 @@ async def add_manual_face(
             pil = ImageOps.exif_transpose(Image.open(abs_path)).convert("RGB")
             img = np.array(pil)
 
-            # Compute 128-d embedding for the explicitly provided bounding box
-            encodings = face_recognition.face_encodings(img, known_face_locations=[loc], num_jitters=3)
-            if not encodings:
+            top, right, bottom, left = region.top, region.right, region.bottom, region.left
+
+            # Crop the user-drawn region out of the image and compute embedding
+            crop = img[top:bottom, left:right]
+            if crop.size == 0:
+                logger.warning("manual-face: empty crop for photo %s region %s", abs_path, loc)
+                return
+
+            results = DeepFace.represent(
+                img_path=crop,
+                model_name="ArcFace",
+                detector_backend="skip",  # bbox is already known — skip re-detection
+                enforce_detection=False,
+                align=False,
+            )
+            if not results or not results[0].get("embedding"):
                 logger.warning("manual-face: could not compute embedding for %s region %s", abs_path, loc)
                 return
 
-            top, right, bottom, left = loc
+            embedding = results[0]["embedding"]
+
             db_sync.add(FaceModel(
                 photo_id=photo_id_str,
                 bbox_top=top,
                 bbox_right=right,
                 bbox_bottom=bottom,
                 bbox_left=left,
-                embedding=encodings[0].tolist(),
-                confidence=0.9,  # user-confirmed, high confidence
+                embedding=embedding,
+                confidence=0.9,  # user-confirmed region
             ))
             db_sync.commit()
             logger.info("manual-face: stored face for photo %s at %s", photo_id_str, loc)

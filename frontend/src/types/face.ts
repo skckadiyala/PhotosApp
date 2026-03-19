@@ -16,6 +16,7 @@ export interface Person {
   id: string;
   name: string | null;
   face_count: number;
+  representative_face_id: string | null;
   created_at: string;
   updated_at: string;
 }

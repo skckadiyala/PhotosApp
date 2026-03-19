@@ -35,6 +35,7 @@ settings = get_settings()
 
 @router.get("", response_model=list[FaceBase])
 async def list_faces(
+    photo_id: uuid.UUID | None = None,
     person_id: uuid.UUID | None = None,
     unassigned: bool = False,
     limit: int = Query(default=100, ge=1, le=500),
@@ -42,7 +43,8 @@ async def list_faces(
     user: User = Depends(get_current_user),
 ):
     """
-    List detected faces. Filter by person_id or unassigned.
+    List detected faces. Filter by photo_id, person_id, or unassigned.
+    When photo_id is provided the limit is ignored so all faces for that photo are returned.
     """
     query = (
         select(Face)
@@ -50,12 +52,16 @@ async def list_faces(
         .where(Photo.user_id == user.id)
     )
 
-    if unassigned:
+    if photo_id:
+        query = query.where(Face.photo_id == photo_id)
+    elif unassigned:
         query = query.where(Face.person_id.is_(None))
     elif person_id:
         query = query.where(Face.person_id == person_id)
 
-    query = query.order_by(Face.created_at.desc()).limit(limit)
+    if not photo_id:
+        query = query.order_by(Face.created_at.desc()).limit(limit)
+
     result = await db.execute(query)
     return list(result.scalars().all())
 
@@ -261,7 +267,7 @@ async def list_faces_to_confirm(
         select(Face)
         .join(Photo, Face.photo_id == Photo.id)
         .where(Photo.user_id == user.id, Face.status == "pending", Face.person_id.isnot(None))
-        .order_by(Face.match_distance.desc())
+        .order_by(Face.match_distance.asc())
         .limit(limit)
     )
     faces = list(result.scalars().all())
@@ -276,13 +282,15 @@ async def list_faces_to_confirm(
     items = []
     for f in faces:
         person = persons_map.get(f.person_id)
-        # Get a confirmed face from the same person to show as reference
+        # Get the most representative face from the same person — the one
+        # closest to the cluster centroid (lowest match_distance).
+        # Do NOT filter by status='confirmed' because after initial clustering
+        # a bad detection may be the only confirmed face and would show as wrong reference.
         ref_face_result = await db.execute(
             select(Face)
             .where(
                 Face.person_id == f.person_id,
                 Face.id != f.id,
-                Face.status == "confirmed",
             )
             .order_by(Face.match_distance.asc())
             .limit(1)

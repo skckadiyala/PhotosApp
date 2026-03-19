@@ -32,3 +32,11 @@ export function useFaces(params?: { person_id?: string; unassigned?: boolean }) 
     queryFn: () => fetchFaces(params),
   });
 }
+
+export function useFacesForPhoto(photoId: string | undefined) {
+  return useQuery<Face[]>({
+    queryKey: ['faces', 'photo', photoId],
+    queryFn: () => fetchFaces({ photo_id: photoId }),
+    enabled: !!photoId,
+  });
+}

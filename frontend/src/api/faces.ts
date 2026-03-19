@@ -26,7 +26,7 @@ export async function renamePerson(id: string, name: string): Promise<Person> {
   return data;
 }
 
-export async function fetchFaces(params?: { person_id?: string; unassigned?: boolean; limit?: number }): Promise<Face[]> {
+export async function fetchFaces(params?: { photo_id?: string; person_id?: string; unassigned?: boolean; limit?: number }): Promise<Face[]> {
   const { data } = await api.get('/faces', { params });
   return data;
 }
