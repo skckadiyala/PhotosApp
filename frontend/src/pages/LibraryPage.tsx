@@ -4,6 +4,7 @@ import { useInView } from 'react-intersection-observer';
 import { usePhotos, useLibrarySummary } from '../hooks/usePhotos';
 import { groupByMonth } from '../utils/groupByMonth';
 import JustifiedPhotoGrid from '../components/photos/JustifiedPhotoGrid';
+import MonthScrollIndicator from '../components/photos/MonthScrollIndicator';
 import { useScrollRestore } from '../hooks/useScrollRestore';
 import Spinner from '../components/common/Spinner';
 import EmptyState from '../components/common/EmptyState';
@@ -110,6 +111,9 @@ export default function LibraryPage() {
   // Ref used to pass a month scroll target across the view-switch render cycle
   const scrollTargetMonthRef = useRef<string | null>(null);
 
+  // Ref for scroll container (used by MonthScrollIndicator)
+  const containerRef = useRef<HTMLDivElement>(null);
+
   const { ref: sentinelRef, inView } = useInView();
 
   // Years/Months views: single API call returns pre-aggregated groupings
@@ -198,7 +202,7 @@ export default function LibraryPage() {
     return <EmptyState title="No photos yet" description="Add photos to your library to get started" />;
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col relative" ref={containerRef}>
       {/* ── Sticky tab bar ── */}
       <div className="sticky top-0 z-20 -mx-4 px-4 py-3 mb-6 bg-white/95 backdrop-blur-sm border-b border-gray-100 grid items-center"
         style={{ gridTemplateColumns: '1fr auto 1fr' }}
@@ -264,7 +268,7 @@ export default function LibraryPage() {
       {view === 'all' && (
         <div className="space-y-8">
           {monthGroups.map((group) => (
-            <section key={group.key} id={`section-${group.key}`}>
+            <section key={group.key} id={`section-${group.key}`} data-month-key={group.key}>
               <h2 className="mb-3 text-lg font-medium text-gray-700 sticky top-0 bg-gray-50 py-2 z-10">
                 {group.label}
               </h2>
@@ -280,6 +284,11 @@ export default function LibraryPage() {
           <div ref={sentinelRef} className="h-10" />
           {isFetchingNextPage && <Spinner />}
         </div>
+      )}
+
+      {/* ── Month Scroll Indicator (only in All Photos view) ── */}
+      {view === 'all' && monthGroups.length > 0 && (
+        <MonthScrollIndicator groups={monthGroups} containerRef={containerRef} />
       )}
     </div>
   );
