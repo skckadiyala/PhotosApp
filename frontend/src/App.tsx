@@ -14,6 +14,7 @@ import FavoritesPage from './pages/FavoritesPage';
 import FaceConfirmPage from './pages/FaceConfirmPage';
 import VideosPage from './pages/VideosPage';
 import MonthDetailPage from './pages/MonthDetailPage';
+import EventDetailPage from './pages/EventDetailPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.accessToken);
@@ -37,6 +38,7 @@ export default function App() {
                 <Route path="/timeline" element={<Navigate to="/library" replace />} />
                 <Route path="/videos" element={<VideosPage />} />
                 <Route path="/library/month/:year/:month" element={<MonthDetailPage />} />
+                <Route path="/library/event/:clusterId" element={<EventDetailPage />} />
                 <Route path="/photo/:id" element={<PhotoDetailPage />} />
                 <Route path="/albums" element={<AlbumsPage />} />
                 <Route path="/albums/:id" element={<AlbumDetailPage />} />

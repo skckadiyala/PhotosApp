@@ -30,6 +30,8 @@ from app.schemas.photo import (
     PaginatedPhotos,
     LibrarySummaryResponse,
     MonthPhotosResponse,
+    PaginatedEventClusters,
+    EventClusterPhotosResponse,
 )
 from app.utils.path import safe_resolve
 
@@ -204,6 +206,222 @@ async def list_photos_by_month(
     return MonthPhotosResponse(
         year=year,
         month=month,
+        count=len(items),
+        items=items,
+    )
+
+
+@router.get("/event-clusters", response_model=PaginatedEventClusters)
+async def list_event_clusters(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    gap_hours: int = Query(default=6, ge=1, le=72),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List adaptive event clusters (folder-like groups) for All Photos.
+
+    Clustering rule: if gap between consecutive photos is greater than
+    ``gap_hours``, start a new cluster.
+    """
+    from sqlalchemy import text
+
+    gap_seconds = gap_hours * 3600
+    offset = (page - 1) * limit
+
+    rows = (await db.execute(
+        text("""
+            WITH base AS (
+                SELECT id, COALESCE(taken_at, created_at) AS ts
+                FROM photos
+                WHERE user_id = :uid
+                  AND is_hidden = false
+                  AND mime_type LIKE 'image/%'
+            ),
+            ordered AS (
+                SELECT id, ts,
+                       LAG(ts) OVER (ORDER BY ts DESC, id) AS prev_ts
+                FROM base
+            ),
+            flagged AS (
+                SELECT id, ts,
+                       CASE
+                           WHEN prev_ts IS NULL THEN 1
+                           WHEN EXTRACT(EPOCH FROM (prev_ts - ts)) > :gap_seconds THEN 1
+                           ELSE 0
+                       END AS is_new
+                FROM ordered
+            ),
+            clustered AS (
+                SELECT id, ts,
+                       SUM(is_new) OVER (ORDER BY ts DESC, id ROWS UNBOUNDED PRECEDING) AS cluster_id
+                FROM flagged
+            ),
+            ranked AS (
+                SELECT cluster_id, id, ts,
+                       ROW_NUMBER() OVER (PARTITION BY cluster_id ORDER BY ts DESC, id) AS rn
+                FROM clustered
+            ),
+            agg AS (
+                SELECT cluster_id,
+                       MAX(ts) AS start_at,
+                       MIN(ts) AS end_at,
+                       COUNT(*) AS cnt
+                FROM clustered
+                GROUP BY cluster_id
+            ),
+            paged AS (
+                SELECT *
+                FROM agg
+                ORDER BY start_at DESC
+                OFFSET :offset
+                LIMIT :limit
+            )
+            SELECT p.cluster_id,
+                   p.start_at,
+                   p.end_at,
+                   p.cnt,
+                   r.id AS cover_photo_id
+            FROM paged p
+            LEFT JOIN ranked r
+              ON r.cluster_id = p.cluster_id
+             AND r.rn = 1
+            ORDER BY p.start_at DESC
+        """),
+        {
+            "uid": str(user.id),
+            "gap_seconds": gap_seconds,
+            "offset": offset,
+            "limit": limit,
+        },
+    )).fetchall()
+
+    total_clusters = (await db.execute(
+        text("""
+            WITH base AS (
+                SELECT id, COALESCE(taken_at, created_at) AS ts
+                FROM photos
+                WHERE user_id = :uid
+                  AND is_hidden = false
+                  AND mime_type LIKE 'image/%'
+            ),
+            ordered AS (
+                SELECT id, ts,
+                       LAG(ts) OVER (ORDER BY ts DESC, id) AS prev_ts
+                FROM base
+            ),
+            flagged AS (
+                SELECT id, ts,
+                       CASE
+                           WHEN prev_ts IS NULL THEN 1
+                           WHEN EXTRACT(EPOCH FROM (prev_ts - ts)) > :gap_seconds THEN 1
+                           ELSE 0
+                       END AS is_new
+                FROM ordered
+            ),
+            clustered AS (
+                SELECT SUM(is_new) OVER (ORDER BY ts DESC, id ROWS UNBOUNDED PRECEDING) AS cluster_id
+                FROM flagged
+            )
+            SELECT COALESCE(MAX(cluster_id), 0) AS total
+            FROM clustered
+        """),
+        {
+            "uid": str(user.id),
+            "gap_seconds": gap_seconds,
+        },
+    )).scalar() or 0
+
+    total_pages = (total_clusters + limit - 1) // limit if total_clusters > 0 else 1
+
+    items = [
+        {
+            "cluster_id": int(row.cluster_id),
+            "start_at": row.start_at,
+            "end_at": row.end_at,
+            "count": int(row.cnt),
+            "cover_photo": {"id": row.cover_photo_id} if row.cover_photo_id else None,
+        }
+        for row in rows
+    ]
+
+    return PaginatedEventClusters(
+        items=items,
+        page=page,
+        limit=limit,
+        total=total_clusters,
+        total_pages=total_pages,
+    )
+
+
+@router.get("/event-clusters/{cluster_id}", response_model=EventClusterPhotosResponse)
+async def get_event_cluster_photos(
+    cluster_id: int,
+    gap_hours: int = Query(default=6, ge=1, le=72),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return all photos inside one adaptive event cluster."""
+    from sqlalchemy import text
+
+    gap_seconds = gap_hours * 3600
+
+    rows = (await db.execute(
+        text("""
+            WITH base AS (
+                SELECT id, COALESCE(taken_at, created_at) AS ts
+                FROM photos
+                WHERE user_id = :uid
+                  AND is_hidden = false
+                  AND mime_type LIKE 'image/%'
+            ),
+            ordered AS (
+                SELECT id, ts,
+                       LAG(ts) OVER (ORDER BY ts DESC, id) AS prev_ts
+                FROM base
+            ),
+            flagged AS (
+                SELECT id, ts,
+                       CASE
+                           WHEN prev_ts IS NULL THEN 1
+                           WHEN EXTRACT(EPOCH FROM (prev_ts - ts)) > :gap_seconds THEN 1
+                           ELSE 0
+                       END AS is_new
+                FROM ordered
+            ),
+            clustered AS (
+                SELECT id, ts,
+                       SUM(is_new) OVER (ORDER BY ts DESC, id ROWS UNBOUNDED PRECEDING) AS cluster_id
+                FROM flagged
+            )
+            SELECT p.*, c.ts AS cluster_ts
+            FROM photos p
+            JOIN clustered c ON c.id = p.id
+            WHERE c.cluster_id = :cluster_id
+            ORDER BY c.ts DESC, p.created_at DESC
+        """),
+        {
+            "uid": str(user.id),
+            "gap_seconds": gap_seconds,
+            "cluster_id": cluster_id,
+        },
+    )).fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event cluster not found")
+
+    photo_ids = [row.id for row in rows]
+    photo_result = await db.execute(
+        select(Photo).where(Photo.id.in_(photo_ids), Photo.user_id == user.id)
+    )
+    by_id = {str(p.id): p for p in photo_result.scalars().all()}
+    items = [by_id[str(row.id)] for row in rows if str(row.id) in by_id]
+
+    return EventClusterPhotosResponse(
+        cluster_id=cluster_id,
+        gap_hours=gap_hours,
+        start_at=rows[0].cluster_ts,
+        end_at=rows[-1].cluster_ts,
         count=len(items),
         items=items,
     )

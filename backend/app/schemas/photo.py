@@ -112,3 +112,31 @@ class LibrarySummaryResponse(BaseModel):
     """Full library summary — replaces fetching all pages for year/month views."""
     years: list[YearSummary]
     total: int
+
+
+class EventClusterSummary(BaseModel):
+    """Summary info for one adaptive event cluster."""
+    cluster_id: int
+    start_at: datetime
+    end_at: datetime
+    count: int
+    cover_photo: CoverPhotoInfo | None
+
+
+class PaginatedEventClusters(BaseModel):
+    """Paginated event cluster folders for All Photos."""
+    items: list[EventClusterSummary]
+    page: int
+    limit: int
+    total: int
+    total_pages: int
+
+
+class EventClusterPhotosResponse(BaseModel):
+    """Photos in one adaptive event cluster."""
+    cluster_id: int
+    gap_hours: int
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    count: int
+    items: list[PhotoBase]

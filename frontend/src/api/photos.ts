@@ -1,5 +1,12 @@
 import api from './client';
-import type { Photo, PhotoDetail, LibrarySummary, MonthPhotosResponse } from '../types/photo';
+import type {
+  Photo,
+  PhotoDetail,
+  LibrarySummary,
+  MonthPhotosResponse,
+  EventClusterSummary,
+  EventClusterPhotosResponse,
+} from '../types/photo';
 import type { PaginatedResponse } from '../types/api';
 
 export async function triggerScan(): Promise<{ message: string; status: string }> {
@@ -69,6 +76,25 @@ export async function fetchLibrarySummary(): Promise<LibrarySummary> {
 export async function fetchPhotosByMonth(year: number, month: number): Promise<MonthPhotosResponse> {
   const { data } = await api.get<MonthPhotosResponse>('/photos/by-month', {
     params: { year, month },
+  });
+  return data;
+}
+
+export async function fetchEventClusters(params: {
+  page?: number;
+  limit?: number;
+  gap_hours?: number;
+}): Promise<PaginatedResponse<EventClusterSummary>> {
+  const { data } = await api.get<PaginatedResponse<EventClusterSummary>>('/photos/event-clusters', { params });
+  return data;
+}
+
+export async function fetchEventClusterPhotos(
+  clusterId: number,
+  gapHours: number = 6,
+): Promise<EventClusterPhotosResponse> {
+  const { data } = await api.get<EventClusterPhotosResponse>(`/photos/event-clusters/${clusterId}`, {
+    params: { gap_hours: gapHours },
   });
   return data;
 }

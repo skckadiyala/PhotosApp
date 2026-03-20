@@ -43,6 +43,23 @@ export interface MonthPhotosResponse {
   items: Photo[];
 }
 
+export interface EventClusterSummary {
+  cluster_id: number;
+  start_at: string;
+  end_at: string;
+  count: number;
+  cover_photo: CoverPhotoInfo | null;
+}
+
+export interface EventClusterPhotosResponse {
+  cluster_id: number;
+  gap_hours: number;
+  start_at: string | null;
+  end_at: string | null;
+  count: number;
+  items: Photo[];
+}
+
 export interface PhotoDetail extends Photo {
   file_path: string;
   host_file_path: string | null;
