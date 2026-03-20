@@ -111,7 +111,7 @@ export default function MonthScrollIndicator({ groups, containerRef }: MonthScro
   return (
     <div
       ref={scrollIndicatorRef}
-      className="pointer-events-none fixed right-2 top-1/2 -translate-y-1/2 select-none z-30"
+      className="pointer-events-none fixed right-2 top-20 select-none z-30"
     >
       <div className="pointer-events-auto flex flex-col items-end gap-0 pr-0 text-xs text-gray-500 transition-colors duration-200">
         {uniqueYears.map((year) => {
