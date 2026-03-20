@@ -23,7 +23,14 @@ from app.config import get_settings
 from app.core.database import get_db
 from app.models.photo import Photo
 from app.models.user import User
-from app.schemas.photo import PhotoBase, PhotoDetail, PhotoMetadataResponse, PaginatedPhotos, LibrarySummaryResponse
+from app.schemas.photo import (
+    PhotoBase,
+    PhotoDetail,
+    PhotoMetadataResponse,
+    PaginatedPhotos,
+    LibrarySummaryResponse,
+    MonthPhotosResponse,
+)
 from app.utils.path import safe_resolve
 
 router = APIRouter()
@@ -162,6 +169,43 @@ async def get_library_summary(
     return LibrarySummaryResponse(
         years=years,
         total=sum(y["count"] for y in years),
+    )
+
+
+@router.get("/by-month", response_model=MonthPhotosResponse)
+async def list_photos_by_month(
+    year: int = Query(..., ge=1900, le=2200),
+    month: int = Query(..., ge=1, le=12),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return all image photos for a given calendar month.
+
+    This endpoint is optimized for direct navigation from Months view, avoiding
+    deep infinite-scroll traversal for large libraries.
+    """
+    date_expr = func.coalesce(Photo.taken_at, Photo.created_at)
+
+    query = (
+        select(Photo)
+        .where(
+            Photo.user_id == user.id,
+            Photo.is_hidden.is_(False),
+            Photo.mime_type.like("image/%"),
+            func.extract("year", date_expr) == year,
+            func.extract("month", date_expr) == month,
+        )
+        .order_by(date_expr.desc(), Photo.created_at.desc())
+    )
+
+    result = await db.execute(query)
+    items = list(result.scalars().all())
+
+    return MonthPhotosResponse(
+        year=year,
+        month=month,
+        count=len(items),
+        items=items,
     )
 
 

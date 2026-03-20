@@ -77,6 +77,14 @@ class PaginatedPhotos(BaseModel):
     total_pages: int
 
 
+class MonthPhotosResponse(BaseModel):
+    """Photos for a specific month."""
+    year: int
+    month: int
+    count: int
+    items: list[PhotoBase]
+
+
 class CoverPhotoInfo(BaseModel):
     """Minimal photo info used as a cover image."""
     id: uuid.UUID

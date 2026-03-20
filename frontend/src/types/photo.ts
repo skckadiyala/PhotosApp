@@ -36,6 +36,13 @@ export interface LibrarySummary {
   total: number;
 }
 
+export interface MonthPhotosResponse {
+  year: number;
+  month: number;
+  count: number;
+  items: Photo[];
+}
+
 export interface PhotoDetail extends Photo {
   file_path: string;
   host_file_path: string | null;

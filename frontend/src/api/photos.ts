@@ -1,5 +1,5 @@
 import api from './client';
-import type { Photo, PhotoDetail, LibrarySummary } from '../types/photo';
+import type { Photo, PhotoDetail, LibrarySummary, MonthPhotosResponse } from '../types/photo';
 import type { PaginatedResponse } from '../types/api';
 
 export async function triggerScan(): Promise<{ message: string; status: string }> {
@@ -63,5 +63,12 @@ export function getVideoStreamUrl(photoId: string, token: string) {
 
 export async function fetchLibrarySummary(): Promise<LibrarySummary> {
   const { data } = await api.get<LibrarySummary>('/photos/library-summary');
+  return data;
+}
+
+export async function fetchPhotosByMonth(year: number, month: number): Promise<MonthPhotosResponse> {
+  const { data } = await api.get<MonthPhotosResponse>('/photos/by-month', {
+    params: { year, month },
+  });
   return data;
 }

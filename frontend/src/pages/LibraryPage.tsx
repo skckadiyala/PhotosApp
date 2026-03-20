@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useInView } from 'react-intersection-observer';
 import { usePhotos, useLibrarySummary } from '../hooks/usePhotos';
 import { groupByMonth } from '../utils/groupByMonth';
@@ -104,12 +104,10 @@ function MonthCard({
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function LibraryPage() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = parseView(searchParams.get('view'));
   const highlightYear = searchParams.get('year') ? Number(searchParams.get('year')) : null;
-
-  // Ref used to pass a month scroll target across the view-switch render cycle
-  const scrollTargetMonthRef = useRef<string | null>(null);
 
   // Ref for scroll container (used by MonthScrollIndicator)
   const containerRef = useRef<HTMLDivElement>(null);
@@ -153,24 +151,6 @@ export default function LibraryPage() {
     }
   }, [view, highlightYear]);
 
-  // Scroll to target month when entering All Photos view via Month click
-  useEffect(() => {
-    if (view === 'all' && scrollTargetMonthRef.current) {
-      const target = scrollTargetMonthRef.current;
-      let attempts = 0;
-      const poll = () => {
-        const el = document.getElementById(`section-${target}`);
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          scrollTargetMonthRef.current = null;
-        } else if (++attempts < 8) {
-          setTimeout(poll, 200);
-        }
-      };
-      requestAnimationFrame(poll);
-    }
-  }, [view]);
-
   const goToYear = useCallback(
     (year: number) => setSearchParams({ view: 'months', year: String(year) }),
     [setSearchParams],
@@ -178,10 +158,10 @@ export default function LibraryPage() {
 
   const goToMonth = useCallback(
     (monthKey: string) => {
-      scrollTargetMonthRef.current = monthKey;
-      setSearchParams({ view: 'all' });
+      const [year, month] = monthKey.split('-');
+      navigate(`/library/month/${year}/${month}`);
     },
-    [setSearchParams],
+    [navigate],
   );
 
   const setView = useCallback(

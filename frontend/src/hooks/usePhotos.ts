@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery, keepPreviousData } from '@tanstack/react-query';
-import { fetchPhotos, fetchPhoto, fetchLibrarySummary } from '../api/photos';
-import type { LibrarySummary } from '../types/photo';
+import { fetchPhotos, fetchPhoto, fetchLibrarySummary, fetchPhotosByMonth } from '../api/photos';
+import type { LibrarySummary, MonthPhotosResponse } from '../types/photo';
 
 export function usePhotos(sort = 'date_taken', media_type?: string) {
   return useInfiniteQuery({
@@ -29,5 +29,14 @@ export function usePhoto(id: string | undefined) {
     // Keep showing the previous photo while the next one loads — prevents
     // the grid page from bleeding through during inter-photo navigation.
     placeholderData: keepPreviousData,
+  });
+}
+
+export function usePhotosByMonth(year: number | null, month: number | null) {
+  return useQuery<MonthPhotosResponse>({
+    queryKey: ['photos-by-month', year, month],
+    queryFn: () => fetchPhotosByMonth(year!, month!),
+    enabled: year !== null && month !== null,
+    staleTime: 5 * 60 * 1000,
   });
 }
