@@ -44,14 +44,22 @@ export default function PhotoDetailPage() {
   const [imgLoaded, setImgLoaded] = useState(false);
   const accessToken = useAuthStore((s: { accessToken: string | null }) => s.accessToken);
 
-  // Reset loaded state when photo changes — skip fade-in animation if already cached
+  // HEIC/HEIF originals can't be decoded by non-Safari browsers — use lg thumbnail
+  // (1600 px JPEG) as the highest-quality displayable source instead.
+  const isHeicPhoto = Boolean(photo?.mime_type?.match(/heic|heif/i));
+  const fullSrc = photo
+    ? (isHeicPhoto ? getThumbnailUrl(photo.id, 'lg') : getOriginalUrl(photo.id))
+    : null;
+
+  // Reset loaded state when photo changes — skip fade-in if the target is already cached
   useEffect(() => {
-    if (id && isImageCached(`/api/v1/photos/${id}/original`)) {
+    if (!fullSrc) { setImgLoaded(false); return; }
+    if (isImageCached(fullSrc)) {
       setImgLoaded(true);
     } else {
       setImgLoaded(false);
     }
-  }, [id]);
+  }, [fullSrc]);
 
   // ── Manual face draw mode ──────────────────────────────────
   const [drawMode, setDrawMode] = useState(false);
@@ -619,7 +627,7 @@ export default function PhotoDetailPage() {
           />
           <AuthImage
             ref={imgRef}
-            src={getOriginalUrl(photo.id)}
+            src={fullSrc ?? getOriginalUrl(photo.id)}
             alt={photo.file_name}
             className="block max-h-full max-w-full object-contain select-none relative"
             loading="eager"
