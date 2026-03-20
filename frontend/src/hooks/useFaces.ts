@@ -7,6 +7,7 @@ export function usePeople(sort = 'face_count') {
   return useQuery<Person[]>({
     queryKey: ['people', sort],
     queryFn: () => fetchPeople(sort),
+    staleTime: 2 * 60 * 1000,  // 2 minutes — people list rarely changes mid-session
   });
 }
 

@@ -23,7 +23,7 @@ from app.config import get_settings
 from app.core.database import get_db
 from app.models.photo import Photo
 from app.models.user import User
-from app.schemas.photo import PhotoBase, PhotoDetail, PhotoMetadataResponse, PaginatedPhotos
+from app.schemas.photo import PhotoBase, PhotoDetail, PhotoMetadataResponse, PaginatedPhotos, LibrarySummaryResponse
 from app.utils.path import safe_resolve
 
 router = APIRouter()
@@ -84,6 +84,84 @@ async def list_photos(
         limit=limit,
         total=total,
         total_pages=total_pages,
+    )
+
+
+@router.get("/library-summary", response_model=LibrarySummaryResponse)
+async def get_library_summary(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return year/month groups with counts and cover photos in a single DB query.
+
+    Used by the Library page Years/Months views — replaces fetching all N pages.
+    """
+    import calendar
+    from sqlalchemy import text
+
+    rows = (await db.execute(
+        text("""
+            WITH ranked AS (
+                SELECT
+                    id AS photo_id,
+                    EXTRACT(YEAR  FROM COALESCE(taken_at, created_at))::int AS yr,
+                    EXTRACT(MONTH FROM COALESCE(taken_at, created_at))::int AS mo,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY
+                            EXTRACT(YEAR  FROM COALESCE(taken_at, created_at))::int,
+                            EXTRACT(MONTH FROM COALESCE(taken_at, created_at))::int
+                        ORDER BY COALESCE(taken_at, created_at) DESC NULLS LAST
+                    ) AS rn,
+                    COUNT(*) OVER (
+                        PARTITION BY
+                            EXTRACT(YEAR  FROM COALESCE(taken_at, created_at))::int,
+                            EXTRACT(MONTH FROM COALESCE(taken_at, created_at))::int
+                    ) AS cnt
+                FROM photos
+                WHERE user_id = :uid
+                  AND is_hidden = false
+                  AND mime_type LIKE 'image/%'
+            )
+            SELECT yr, mo, cnt, photo_id
+            FROM   ranked
+            WHERE  rn <= 4
+            ORDER  BY yr DESC, mo DESC, rn ASC
+        """),
+        {"uid": str(user.id)},
+    )).fetchall()
+
+    # Build month -> year structure in Python
+    months_dict: dict[tuple[int, int], dict] = {}
+    for row in rows:
+        yr, mo, cnt, photo_id = int(row.yr), int(row.mo), int(row.cnt), row.photo_id
+        key = (yr, mo)
+        if key not in months_dict:
+            months_dict[key] = {
+                "year": yr,
+                "month": mo,
+                "key": f"{yr}-{mo:02d}",
+                "label": f"{calendar.month_name[mo]} {yr}",
+                "count": cnt,
+                "cover_photos": [],
+            }
+        months_dict[key]["cover_photos"].append({"id": photo_id})
+
+    years_dict: dict[int, dict] = {}
+    for (yr, mo), mdata in months_dict.items():
+        if yr not in years_dict:
+            years_dict[yr] = {"year": yr, "count": 0, "cover_photo": None, "months": []}
+        years_dict[yr]["count"] += mdata["count"]
+        years_dict[yr]["months"].append(mdata)
+        if years_dict[yr]["cover_photo"] is None and mdata["cover_photos"]:
+            years_dict[yr]["cover_photo"] = mdata["cover_photos"][0]
+
+    years = sorted(years_dict.values(), key=lambda y: y["year"], reverse=True)
+    for y in years:
+        y["months"] = sorted(y["months"], key=lambda m: m["month"], reverse=True)
+
+    return LibrarySummaryResponse(
+        years=years,
+        total=sum(y["count"] for y in years),
     )
 
 

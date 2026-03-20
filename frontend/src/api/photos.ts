@@ -1,5 +1,5 @@
 import api from './client';
-import type { Photo, PhotoDetail } from '../types/photo';
+import type { Photo, PhotoDetail, LibrarySummary } from '../types/photo';
 import type { PaginatedResponse } from '../types/api';
 
 export async function triggerScan(): Promise<{ message: string; status: string }> {
@@ -59,4 +59,9 @@ export function getOriginalUrl(photoId: string) {
 
 export function getVideoStreamUrl(photoId: string, token: string) {
   return `/api/v1/photos/${photoId}/stream?token=${encodeURIComponent(token)}`;
+}
+
+export async function fetchLibrarySummary(): Promise<LibrarySummary> {
+  const { data } = await api.get<LibrarySummary>('/photos/library-summary');
+  return data;
 }

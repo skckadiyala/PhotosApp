@@ -11,6 +11,31 @@ export interface Photo {
   thumb_md: string | null;
 }
 
+export interface CoverPhotoInfo {
+  id: string;
+}
+
+export interface MonthSummary {
+  year: number;
+  month: number;
+  key: string;       // e.g. "2024-12"
+  label: string;     // e.g. "December 2024"
+  count: number;
+  cover_photos: CoverPhotoInfo[];
+}
+
+export interface YearSummary {
+  year: number;
+  count: number;
+  cover_photo: CoverPhotoInfo | null;
+  months: MonthSummary[];
+}
+
+export interface LibrarySummary {
+  years: YearSummary[];
+  total: number;
+}
+
 export interface PhotoDetail extends Photo {
   file_path: string;
   host_file_path: string | null;

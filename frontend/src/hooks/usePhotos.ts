@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useQuery, keepPreviousData } from '@tanstack/react-query';
-import { fetchPhotos, fetchPhoto } from '../api/photos';
+import { fetchPhotos, fetchPhoto, fetchLibrarySummary } from '../api/photos';
+import type { LibrarySummary } from '../types/photo';
 
 export function usePhotos(sort = 'date_taken', media_type?: string) {
   return useInfiniteQuery({
@@ -8,6 +9,15 @@ export function usePhotos(sort = 'date_taken', media_type?: string) {
     initialPageParam: 1,
     getNextPageParam: (lastPage) =>
       lastPage.page < lastPage.total_pages ? lastPage.page + 1 : undefined,
+    staleTime: 2 * 60 * 1000,  // 2 minutes — prevents refetch on every navigation
+  });
+}
+
+export function useLibrarySummary() {
+  return useQuery<LibrarySummary>({
+    queryKey: ['library-summary'],
+    queryFn: fetchLibrarySummary,
+    staleTime: 5 * 60 * 1000,  // 5 minutes — single DB query replaces 2000+ page fetches
   });
 }
 

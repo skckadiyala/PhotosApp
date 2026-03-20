@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useInView } from 'react-intersection-observer';
-import { usePhotos } from '../hooks/usePhotos';
-import { groupByYearMonth, type YearGroup, type MonthGroup } from '../utils/groupByYear';
+import { usePhotos, useLibrarySummary } from '../hooks/usePhotos';
 import { groupByMonth } from '../utils/groupByMonth';
 import JustifiedPhotoGrid from '../components/photos/JustifiedPhotoGrid';
 import { useScrollRestore } from '../hooks/useScrollRestore';
@@ -10,7 +9,7 @@ import Spinner from '../components/common/Spinner';
 import EmptyState from '../components/common/EmptyState';
 import { getThumbnailUrl } from '../api/photos';
 import AuthImage from '../components/common/AuthImage';
-import type { Photo } from '../types/photo';
+import type { Photo, YearSummary, MonthSummary } from '../types/photo';
 
 type View = 'years' | 'months' | 'all';
 
@@ -19,27 +18,24 @@ function parseView(param: string | null): View {
   return 'all';
 }
 
-// ─── Year card ────────────────────────────────────────────────────────────────
+// ─── Year card (uses summary data — no full photo fetch required) ─────────────
 
 function YearCard({
-  yearGroup,
-  hasMore,
+  year,
   onClick,
 }: {
-  yearGroup: YearGroup;
-  hasMore: boolean;
+  year: YearSummary;
   onClick: () => void;
 }) {
-  const cover = yearGroup.coverPhoto;
   return (
     <button
       onClick={onClick}
       className="relative overflow-hidden rounded-2xl aspect-square group focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
     >
-      {cover ? (
+      {year.cover_photo ? (
         <AuthImage
-          src={getThumbnailUrl(cover.id, 'md')}
-          alt={String(yearGroup.year)}
+          src={getThumbnailUrl(year.cover_photo.id, 'md')}
+          alt={String(year.year)}
           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
           loading="eager"
         />
@@ -49,27 +45,25 @@ function YearCard({
       {/* Gradient overlay */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent" />
       <div className="absolute bottom-4 left-4 text-left text-white">
-        <div className="text-3xl font-bold leading-none tracking-tight">{yearGroup.year}</div>
+        <div className="text-3xl font-bold leading-none tracking-tight">{year.year}</div>
         <div className="mt-1 text-xs font-medium opacity-75">
-          {yearGroup.count.toLocaleString()}
-          {hasMore ? '+' : ''} photos
+          {year.count.toLocaleString()} photos
         </div>
       </div>
     </button>
   );
 }
 
-// ─── Month card ───────────────────────────────────────────────────────────────
+// ─── Month card (uses summary data — no full photo fetch required) ────────────
 
 function MonthCard({
-  monthGroup,
+  month,
   onClick,
 }: {
-  monthGroup: MonthGroup;
+  month: MonthSummary;
   onClick: () => void;
 }) {
-  const cover = monthGroup.photos.slice(0, 4);
-  const [monthLabel, yearLabel] = monthGroup.label.split(' ');
+  const [monthLabel, yearLabel] = month.label.split(' ');
 
   return (
     <button
@@ -79,7 +73,7 @@ function MonthCard({
       {/* 2×2 mosaic */}
       <div className="grid grid-cols-2 gap-0.5 rounded-xl overflow-hidden aspect-square bg-gray-100">
         {[0, 1, 2, 3].map((i) => {
-          const p = cover[i];
+          const p = month.cover_photos[i];
           return (
             <div key={i} className="overflow-hidden bg-gray-100">
               {p ? (
@@ -99,7 +93,7 @@ function MonthCard({
       <div className="mt-2 px-0.5">
         <div className="text-sm font-semibold text-gray-900">{monthLabel}</div>
         <div className="text-xs text-gray-400">
-          {yearLabel} · {monthGroup.photos.length.toLocaleString()} photos
+          {yearLabel} · {month.count.toLocaleString()} photos
         </div>
       </div>
     </button>
@@ -118,7 +112,11 @@ export default function LibraryPage() {
 
   const { ref: sentinelRef, inView } = useInView();
 
-  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = usePhotos(
+  // Years/Months views: single API call returns pre-aggregated groupings
+  const { data: summary, isLoading: summaryLoading } = useLibrarySummary();
+
+  // All Photos view: infinite scroll of actual photo objects
+  const { data, isLoading: photosLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = usePhotos(
     'date_taken',
     'image',
   );
@@ -130,25 +128,15 @@ export default function LibraryPage() {
     }
   }, [view, inView, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  // Years / Months views: eagerly fetch all pages so cards populate
-  useEffect(() => {
-    if ((view === 'years' || view === 'months') && hasNextPage && !isFetchingNextPage) {
-      fetchNextPage();
-    }
-  // Re-run each time a new page lands so we keep chaining
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, hasNextPage, isFetchingNextPage, data?.pages.length]);
-
   const allPhotos: Photo[] = useMemo(
     () => data?.pages.flatMap((page) => page.items) ?? [],
     [data],
   );
 
-  const years = useMemo(() => groupByYearMonth(allPhotos), [allPhotos]);
   const monthGroups = useMemo(() => groupByMonth(allPhotos), [allPhotos]);
 
   // Restore scroll position when returning from PhotoDetailPage
-  useScrollRestore('photo', view !== 'all' || isLoading);
+  useScrollRestore('photo', view !== 'all' || photosLoading);
 
   // Scroll to highlighted year when entering Months view via Year click
   useEffect(() => {
@@ -165,7 +153,6 @@ export default function LibraryPage() {
   useEffect(() => {
     if (view === 'all' && scrollTargetMonthRef.current) {
       const target = scrollTargetMonthRef.current;
-      // Poll briefly to wait for the section to be rendered
       let attempts = 0;
       const poll = () => {
         const el = document.getElementById(`section-${target}`);
@@ -198,11 +185,17 @@ export default function LibraryPage() {
     [setSearchParams],
   );
 
+  // Show spinner only for the active view's data source
+  const isLoading =
+    (view === 'years' || view === 'months') ? summaryLoading : photosLoading;
+
   if (isLoading) return <Spinner />;
-  if (allPhotos.length === 0)
-    return (
-      <EmptyState title="No photos yet" description="Add photos to your library to get started" />
-    );
+
+  if ((view === 'years' || view === 'months') && (!summary || summary.years.length === 0))
+    return <EmptyState title="No photos yet" description="Add photos to your library to get started" />;
+
+  if (view === 'all' && allPhotos.length === 0 && !photosLoading)
+    return <EmptyState title="No photos yet" description="Add photos to your library to get started" />;
 
   return (
     <div className="flex flex-col">
@@ -230,46 +223,36 @@ export default function LibraryPage() {
           ))}
         </div>
 
-        {/* Right: loading progress for year/month views */}
-        <div className="flex justify-end">
-          {(view === 'years' || view === 'months') && hasNextPage && (
-            <span className="text-xs text-gray-400 flex items-center gap-1.5">
-              <span className="inline-block w-3 h-3 border-2 border-gray-300 border-t-primary-500 rounded-full animate-spin" />
-              {allPhotos.length.toLocaleString()} loaded…
-            </span>
-          )}
-        </div>
+        <div className="flex justify-end" />
       </div>
 
       {/* ── Years view ── */}
-      {view === 'years' && (
+      {view === 'years' && summary && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {years.map((yg) => (
+          {summary.years.map((ys) => (
             <YearCard
-              key={yg.year}
-              yearGroup={yg}
-              hasMore={hasNextPage ?? false}
-              onClick={() => goToYear(yg.year)}
+              key={ys.year}
+              year={ys}
+              onClick={() => goToYear(ys.year)}
             />
           ))}
         </div>
       )}
 
       {/* ── Months view ── */}
-      {view === 'months' && (
+      {view === 'months' && summary && (
         <div className="space-y-10">
-          {years.map((yg) => (
-            <section key={yg.year} id={`year-section-${yg.year}`}>
+          {summary.years.map((ys) => (
+            <section key={ys.year} id={`year-section-${ys.year}`}>
               <div className="flex items-baseline gap-3 mb-5">
-                <h2 className="text-4xl font-bold text-gray-900">{yg.year}</h2>
+                <h2 className="text-4xl font-bold text-gray-900">{ys.year}</h2>
                 <span className="text-sm text-gray-400">
-                  {yg.count.toLocaleString()}
-                  {hasNextPage ? '+' : ''} photos
+                  {ys.count.toLocaleString()} photos
                 </span>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
-                {yg.months.map((mg) => (
-                  <MonthCard key={mg.key} monthGroup={mg} onClick={() => goToMonth(mg.key)} />
+                {ys.months.map((ms) => (
+                  <MonthCard key={ms.key} month={ms} onClick={() => goToMonth(ms.key)} />
                 ))}
               </div>
             </section>

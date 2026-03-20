@@ -75,3 +75,32 @@ class PaginatedPhotos(BaseModel):
     limit: int
     total: int
     total_pages: int
+
+
+class CoverPhotoInfo(BaseModel):
+    """Minimal photo info used as a cover image."""
+    id: uuid.UUID
+
+
+class MonthSummary(BaseModel):
+    """Aggregated data for one calendar month."""
+    year: int
+    month: int
+    key: str          # e.g. "2024-12"
+    label: str        # e.g. "December 2024"
+    count: int
+    cover_photos: list[CoverPhotoInfo]  # up to 4 for mosaic
+
+
+class YearSummary(BaseModel):
+    """Aggregated data for one calendar year."""
+    year: int
+    count: int
+    cover_photo: CoverPhotoInfo | None
+    months: list[MonthSummary]
+
+
+class LibrarySummaryResponse(BaseModel):
+    """Full library summary — replaces fetching all pages for year/month views."""
+    years: list[YearSummary]
+    total: int

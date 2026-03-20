@@ -25,11 +25,15 @@ router = APIRouter()
 
 @router.get("", response_model=list[PersonBase])
 async def list_people(
-    sort: str = Query(default="face_count", pattern="^(face_count|name|created_at)$"),
+    sort: str = Query(default="face_count"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """List all people (face clusters) for the current user."""
+    # Normalise sort — strip any trailing modifiers (e.g. ":1") and fall back to default
+    sort = sort.split(":")[0].strip()
+    if sort not in {"face_count", "name", "created_at"}:
+        sort = "face_count"
     # Exclude unnamed clusters with no faces — these are orphaned records
     # left when their faces were deleted (e.g. false-positive purge).
     query = select(Person).where(
