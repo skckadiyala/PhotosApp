@@ -609,12 +609,12 @@ export default function PhotoDetailPage() {
             style={{ filter: 'blur(14px)', transform: 'scale(1.06)', opacity: imgLoaded ? 0 : 1, transition: 'opacity 0.15s ease' } as React.CSSProperties}
             loading="eager"
           />
-          {/* lg thumbnail: prefetched from prior navigation → higher quality blur-up */}
+          {/* lg thumbnail: 1600px — shown sharp as the visible placeholder until original loads */}
           <AuthImage
             src={getThumbnailUrl(photo.id, 'lg')}
             alt=""
             className="absolute inset-0 w-full h-full object-contain select-none"
-            style={{ filter: 'blur(8px)', transform: 'scale(1.05)', opacity: imgLoaded ? 0 : 1, transition: 'opacity 0.15s ease' } as React.CSSProperties}
+            style={{ opacity: imgLoaded ? 0 : 1, transition: 'opacity 0.2s ease' } as React.CSSProperties}
             loading="eager"
           />
           <AuthImage
