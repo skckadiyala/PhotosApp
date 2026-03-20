@@ -5,6 +5,7 @@ import { usePhotosByMonth } from '../hooks/usePhotos';
 import JustifiedPhotoGrid from '../components/photos/JustifiedPhotoGrid';
 import Spinner from '../components/common/Spinner';
 import EmptyState from '../components/common/EmptyState';
+import { useScrollRestore } from '../hooks/useScrollRestore';
 
 function parseMonthParams(yearParam?: string, monthParam?: string) {
   const year = yearParam ? Number(yearParam) : NaN;
@@ -21,6 +22,8 @@ export default function MonthDetailPage() {
   const { year, month } = parseMonthParams(yearParam, monthParam);
 
   const { data, isLoading } = usePhotosByMonth(year, month);
+
+  useScrollRestore('photo', isLoading);
 
   const heading = useMemo(() => {
     if (year === null || month === null) return 'Invalid month';
