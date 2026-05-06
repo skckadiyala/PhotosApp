@@ -13,6 +13,8 @@ export interface Photo {
 
 export interface CoverPhotoInfo {
   id: string;
+  thumb_sm?: string | null;
+  thumb_md?: string | null;
 }
 
 export interface MonthSummary {

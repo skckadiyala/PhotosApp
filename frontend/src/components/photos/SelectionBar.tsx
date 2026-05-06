@@ -1,13 +1,17 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useUIStore } from '../../stores/uiStore';
 import { useAuthStore } from '../../stores/authStore';
-import { getThumbnailUrl } from '../../api/photos';
+import { getThumbnailUrl, archivePhotos } from '../../api/photos';
+import ConfirmDialog from '../common/ConfirmDialog';
 
 export default function SelectionBar() {
   const selectionMode = useUIStore((s) => s.selectionMode);
   const selectedPhotoIds = useUIStore((s) => s.selectedPhotoIds);
   const clearSelection = useUIStore((s) => s.clearSelection);
   const token = useAuthStore((s) => s.accessToken);
+  const queryClient = useQueryClient();
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const count = selectedPhotoIds.size;
 
@@ -89,16 +93,50 @@ export default function SelectionBar() {
       });
   };
 
+  const handleArchive = () => setShowConfirm(true);
+
+  const doArchive = async () => {
+    setShowConfirm(false);
+    const ids = Array.from(selectedPhotoIds);
+    try {
+      const result = await archivePhotos(ids);
+      if (result.errors.length > 0 && result.archived.length === 0) {
+        alert(`Failed to archive: ${result.errors[0].error}`);
+        return;
+      }
+      clearSelection();
+      await queryClient.resetQueries({ queryKey: ['photos'] });
+      await queryClient.invalidateQueries({ queryKey: ['library-summary'] });
+      await queryClient.invalidateQueries({ queryKey: ['event-clusters'] });
+      await queryClient.invalidateQueries({ queryKey: ['photos-by-month'] });
+    } catch (err) {
+      console.error('Archive failed:', err);
+      alert('Failed to archive some items. Please try again.');
+    }
+  };
+
   const canShare = typeof navigator.share === 'function';
 
+  const archiveLabel = `${count} item${count !== 1 ? 's' : ''}`;
+
   return (
+    <>
+    <ConfirmDialog
+      open={showConfirm}
+      title="Archive photos?"
+      message={`Archive ${archiveLabel}? They will be moved to ._archive/ and hidden from your library.`}
+      confirmLabel="Archive"
+      destructive={false}
+      onConfirm={doArchive}
+      onCancel={() => setShowConfirm(false)}
+    />
     <div
       className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full bg-gray-900 px-5 py-3 shadow-2xl"
       role="toolbar"
       aria-label="Selection actions"
     >
       <span className="text-sm font-semibold text-white">
-        {count} {count === 1 ? 'photo' : 'photos'} selected
+        {count} {count === 1 ? 'item' : 'items'} selected
       </span>
 
       {canShare && (
@@ -122,6 +160,21 @@ export default function SelectionBar() {
       <div className="h-4 w-px bg-white/30" />
 
       <button
+        onClick={handleArchive}
+        className="flex items-center gap-1.5 text-sm font-medium text-white transition-colors hover:text-amber-300"
+        aria-label="Archive selected items"
+      >
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="21 8 21 21 3 21 3 8" />
+          <rect x="1" y="3" width="22" height="5" />
+          <line x1="10" y1="12" x2="14" y2="12" />
+        </svg>
+        Archive
+      </button>
+
+      <div className="h-4 w-px bg-white/30" />
+
+      <button
         onClick={clearSelection}
         className="flex items-center gap-1.5 text-sm font-medium text-white transition-colors hover:text-red-300"
         aria-label="Cancel selection"
@@ -133,5 +186,6 @@ export default function SelectionBar() {
         Cancel
       </button>
     </div>
+    </>
   );
 }

@@ -1,64 +1,56 @@
 import logging
 import os
 
-import numpy as np
-
 from app.config import get_settings
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Lazy-loaded model
-_face_app = None
 
-
-def _get_face_app():
-    global _face_app
-    if _face_app is None:
-        from insightface.app import FaceAnalysis
-        _face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-        _face_app.prepare(ctx_id=0, det_size=(640, 640))
-    return _face_app
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.m4v', '.3gp', '.webm', '.mts', '.m2ts'}
 
 
 @celery_app.task(name="detect_faces", bind=True, max_retries=2)
 def detect_faces(self, photo_id: str, file_path: str):
-    """Detect faces and extract 512-dim embeddings."""
-    try:
-        import cv2
+    """Detect faces and persist embeddings for a single photo (images only)."""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in VIDEO_EXTENSIONS:
+        logger.debug("Skipping face detection on video %s", file_path)
+        return None
 
+    try:
         full_path = os.path.join(settings.photos_dir, file_path)
         if not os.path.isfile(full_path):
             logger.error("Photo file not found: %s", full_path)
             return None
 
-        img = cv2.imread(full_path)
-        if img is None:
-            logger.error("Could not read image: %s", full_path)
-            return None
-
-        app = _get_face_app()
-        detected = app.get(img)
-
-        faces = []
-        for face in detected:
-            bbox = face.bbox.astype(int)
-            embedding = face.embedding.tolist()
-
-            faces.append({
-                "photo_id": photo_id,
-                "bbox_x": int(bbox[0]),
-                "bbox_y": int(bbox[1]),
-                "bbox_w": int(bbox[2] - bbox[0]),
-                "bbox_h": int(bbox[3] - bbox[1]),
-                "embedding": embedding,
-                "confidence": float(face.det_score),
-            })
-
-        logger.info("Detected %d faces in photo %s", len(faces), photo_id)
-        return {"photo_id": photo_id, "faces": faces}
+        from app.services.face_detector import process_photo_faces
+        n_faces = process_photo_faces(photo_id, full_path)
+        logger.info("Detected %d face(s) in photo %s", n_faces, photo_id)
+        return {"photo_id": photo_id, "faces_detected": n_faces}
 
     except Exception as exc:
         logger.exception("Face detection failed for %s", photo_id)
         raise self.retry(exc=exc, countdown=60)
+
+
+@celery_app.task(name="run_bulk_face_scan", bind=True)
+def run_bulk_face_scan(self, user_id: str):
+    """Detect faces on all unprocessed photos, then cluster into people.
+
+    Runs entirely inside the face_worker container so the backend process
+    stays free for API requests.
+    """
+    from app.services.face_detector import process_all_photos
+    from app.services.face_cluster import cluster_faces
+
+    logger.info("Bulk face scan starting for user %s", user_id)
+    stats = process_all_photos(user_id=user_id)
+    logger.info("Bulk face scan complete: %s", stats)
+
+    if stats.get("total_faces", 0) > 0:
+        cluster_stats = cluster_faces(user_id)
+        logger.info("Face clustering complete: %s", cluster_stats)
+
+    return stats

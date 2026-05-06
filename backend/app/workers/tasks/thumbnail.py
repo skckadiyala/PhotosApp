@@ -1,8 +1,6 @@
 import logging
 import os
 
-from PIL import Image
-
 from app.config import get_settings
 from app.workers.celery_app import celery_app
 
@@ -12,49 +10,38 @@ settings = get_settings()
 
 @celery_app.task(name="generate_thumbnails", bind=True, max_retries=3)
 def generate_thumbnails(self, photo_id: str, file_path: str):
-    """Generate sm/md/lg thumbnails for a photo."""
+    """Generate sm/md/lg thumbnails for a photo or video and persist paths to DB."""
+    from app.services.thumbnail import generate_thumbnails as _svc
+
     try:
         full_path = os.path.join(settings.photos_dir, file_path)
         if not os.path.isfile(full_path):
-            logger.error("Photo file not found: %s", full_path)
+            logger.error("File not found: %s", full_path)
             return None
 
-        img = Image.open(full_path)
-        img = _auto_orient(img)
+        results = _svc(photo_id, full_path)
 
-        results = {}
-        for size_name, max_dim in [("sm", settings.thumb_sm), ("md", settings.thumb_md), ("lg", settings.thumb_lg)]:
-            thumb_rel = os.path.join(size_name, f"{photo_id}.jpg")
-            thumb_path = os.path.join(settings.thumbnails_dir, thumb_rel)
-            os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+        try:
+            from app.core.database import get_sync_db
+            from app.models.photo import Photo
+            from sqlalchemy import select
 
-            thumb = img.copy()
-            thumb.thumbnail((max_dim, max_dim), Image.LANCZOS)
-            thumb = thumb.convert("RGB")
-            thumb.save(thumb_path, "JPEG", quality=85, optimize=True)
+            db = get_sync_db()
+            try:
+                photo = db.execute(select(Photo).where(Photo.id == photo_id)).scalar_one_or_none()
+                if photo:
+                    photo.thumb_sm = results.get("sm")
+                    photo.thumb_md = results.get("md")
+                    photo.thumb_lg = results.get("lg")
+                    photo.is_processed = True
+                    db.commit()
+            finally:
+                db.close()
+        except Exception:
+            logger.warning("Could not persist thumbnail paths for %s", photo_id, exc_info=True)
 
-            results[f"thumb_{size_name}"] = thumb_rel
-            logger.info("Generated %s thumbnail: %s", size_name, thumb_rel)
-
-        return {"photo_id": photo_id, **results}
+        return {"photo_id": photo_id, **{f"thumb_{k}": v for k, v in results.items()}}
 
     except Exception as exc:
         logger.exception("Thumbnail generation failed for %s", photo_id)
         raise self.retry(exc=exc, countdown=30)
-
-
-def _auto_orient(img: Image.Image) -> Image.Image:
-    """Auto-rotate image based on EXIF orientation."""
-    from PIL import ExifTags
-
-    try:
-        exif = img.getexif()
-        orientation_key = next(k for k, v in ExifTags.TAGS.items() if v == "Orientation")
-        orientation = exif.get(orientation_key)
-
-        rotations = {3: 180, 6: 270, 8: 90}
-        if orientation in rotations:
-            img = img.rotate(rotations[orientation], expand=True)
-    except (StopIteration, AttributeError, KeyError):
-        pass
-    return img

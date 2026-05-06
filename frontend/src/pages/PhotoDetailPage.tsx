@@ -6,12 +6,13 @@ import toast from 'react-hot-toast';
 import { usePhoto, usePhotos } from '../hooks/usePhotos';
 import { useFacesForPhoto, usePeople } from '../hooks/useFaces';
 import { useAlbums } from '../hooks/useAlbums';
-import { getOriginalUrl, getThumbnailUrl, scanPhotoFaces, addManualFace, toggleFavorite } from '../api/photos';
+import { getOriginalUrl, getThumbnailUrl, scanPhotoFaces, addManualFace, toggleFavorite, fetchPhoto, archivePhotos } from '../api/photos';
 import { addPhotosToAlbum } from '../api/albums';
 import { assignFace, deleteFace, getFaceThumbnailUrl } from '../api/faces';
-import AuthImage, { prefetchAuthImage, isImageCached } from '../components/common/AuthImage';
-import { useAuthStore } from '../stores/authStore';
+import AuthImage, { isImageCached, prefetchAuthImage } from '../components/common/AuthImage';
 import Spinner from '../components/common/Spinner';
+import ConfirmDialog from '../components/common/ConfirmDialog';
+import { useAuthStore } from '../stores/authStore';
 import type { Face, Person } from '../types/face';
 import type { Album } from '../types/album';
 
@@ -24,12 +25,15 @@ export default function PhotoDetailPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const token = useAuthStore((s) => s.accessToken);
   const { data: photo, isLoading } = usePhoto(id);
   const { data: photoFaces = [] } = useFacesForPhoto(id);
   const { data: albumsData } = useAlbums();
   const { data: peopleData } = usePeople();
   const { data: photosData } = usePhotos();
   const [showInfo, setShowInfo] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [showAlbumPicker, setShowAlbumPicker] = useState(false);
@@ -42,24 +46,23 @@ export default function PhotoDetailPage() {
   const [newPersonName, setNewPersonName] = useState('');
   const [scanningFaces, setScanningFaces] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
-  const accessToken = useAuthStore((s: { accessToken: string | null }) => s.accessToken);
 
   // HEIC/HEIF originals can't be decoded by non-Safari browsers — use lg thumbnail
   // (1600 px JPEG) as the highest-quality displayable source instead.
   const isHeicPhoto = Boolean(photo?.mime_type?.match(/heic|heif/i));
-  const fullSrc = photo
-    ? (isHeicPhoto ? getThumbnailUrl(photo.id, 'lg') : getOriginalUrl(photo.id))
-    : null;
+  // For non-HEIC photos the original is fetched via AuthImage (requires auth).
+  // HEIC photos use the lg thumbnail served directly by nginx — no auth needed.
+  const originalSrc = !isHeicPhoto && photo ? getOriginalUrl(photo.id) : null;
 
-  // Reset loaded state when photo changes — skip fade-in if the target is already cached
+  // Reset loaded state when photo changes — skip fade-in if original is already blob-cached
   useEffect(() => {
-    if (!fullSrc) { setImgLoaded(false); return; }
-    if (isImageCached(fullSrc)) {
+    if (!photo) { setImgLoaded(false); return; }
+    if (originalSrc && isImageCached(originalSrc)) {
       setImgLoaded(true);
     } else {
       setImgLoaded(false);
     }
-  }, [fullSrc]);
+  }, [photo?.id, originalSrc]);
 
   // ── Manual face draw mode ──────────────────────────────────
   const [drawMode, setDrawMode] = useState(false);
@@ -238,20 +241,39 @@ export default function PhotoDetailPage() {
     ? navPhotoIds[currentIndex + 1]
     : null;
 
-  // Preload adjacent photos into blob cache so navigation is instant
+  // Prefetch md thumbnails + photo metadata for adjacent photos as soon as
+  // prev/next IDs are known. Metadata prefetch fills the React Query cache so
+  // navigating is instant (no API round-trip on arrival).
   useEffect(() => {
-    if (!accessToken) return;
-    if (prevId) {
-      prefetchAuthImage(getThumbnailUrl(prevId, 'sm'), accessToken);
-      prefetchAuthImage(getThumbnailUrl(prevId, 'lg'), accessToken);
-      prefetchAuthImage(getOriginalUrl(prevId), accessToken);
+    for (const adjId of [prevId, nextId].filter(Boolean) as string[]) {
+      const adjPhoto = allPhotosFlat.find((p) => p.id === adjId);
+      if (adjPhoto?.thumb_md) {
+        const img = new Image();
+        img.src = `/thumbnails/${adjPhoto.thumb_md}`;
+      }
+      // Warm the photo detail cache so the next page renders immediately
+      queryClient.prefetchQuery({
+        queryKey: ['photo', adjId],
+        queryFn: () => fetchPhoto(adjId),
+        staleTime: 10 * 60 * 1000,
+      });
     }
-    if (nextId) {
-      prefetchAuthImage(getThumbnailUrl(nextId, 'sm'), accessToken);
-      prefetchAuthImage(getThumbnailUrl(nextId, 'lg'), accessToken);
-      prefetchAuthImage(getOriginalUrl(nextId), accessToken);
+  }, [prevId, nextId, allPhotosFlat, queryClient]);
+
+  // After the current original finishes loading, prefetch adjacent originals
+  // into the blob cache. When the user navigates, the original is already
+  // downloaded and AuthImage renders it on the first frame with zero wait.
+  useEffect(() => {
+    if (!imgLoaded || !token) return;
+    for (const adjId of [prevId, nextId].filter(Boolean) as string[]) {
+      const adjPhoto = allPhotosFlat.find((p) => p.id === adjId);
+      const isHeic = Boolean(adjPhoto?.mime_type?.match(/heic|heif/i));
+      // HEIC uses the lg thumbnail (nginx-cached, no auth needed) — skip
+      if (!isHeic) {
+        prefetchAuthImage(getOriginalUrl(adjId!), token);
+      }
     }
-  }, [prevId, nextId, accessToken]);
+  }, [imgLoaded, prevId, nextId, allPhotosFlat, token]);
 
   const prevNavState = useMemo(
     () => ({ photoIds: contextPhotoIds, returnTo, direction: 'prev' }),
@@ -272,10 +294,11 @@ export default function PhotoDetailPage() {
   // Ref for the outermost viewer div — used for the native wheel listener.
   const viewerRef = useRef<HTMLDivElement>(null);
 
-  // Reset zoom/pan whenever the photo changes
+  // Reset zoom/pan and archiving state whenever the photo changes
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+    setArchiving(false);
   }, [id]);
 
   const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
@@ -375,6 +398,31 @@ export default function PhotoDetailPage() {
     onError: () => toast.error('Failed to delete face'),
   });
 
+  const handleArchive = useCallback(() => {
+    if (!id || archiving) return;
+    setShowArchiveConfirm(true);
+  }, [id, archiving]);
+
+  const doArchive = useCallback(async () => {
+    setShowArchiveConfirm(false);
+    if (!id) return;
+    setArchiving(true);
+    try {
+      await archivePhotos([id]);
+      queryClient.resetQueries({ queryKey: ['photos'] });
+      queryClient.invalidateQueries({ queryKey: ['library-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['event-clusters'] });
+      queryClient.invalidateQueries({ queryKey: ['photos-by-month'] });
+      if (nextId) navigate(`/photo/${nextId}`, { state: nextNavState });
+      else if (prevId) navigate(`/photo/${prevId}`, { state: prevNavState });
+      else if (returnTo) navigate(returnTo);
+      else navigate(-1 as never);
+    } catch {
+      toast.error('Failed to archive photo');
+      setArchiving(false);
+    }
+  }, [id, nextId, prevId, nextNavState, prevNavState, returnTo, navigate, queryClient]);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       // Don't intercept arrow keys while typing in an input/textarea
@@ -418,6 +466,15 @@ export default function PhotoDetailPage() {
   ];
 
   return (
+    <>
+    <ConfirmDialog
+      open={showArchiveConfirm}
+      title="Archive photo?"
+      message="This photo will be moved to ._archive/ and hidden from your library."
+      confirmLabel="Archive"
+      onConfirm={doArchive}
+      onCancel={() => setShowArchiveConfirm(false)}
+    />
     <div ref={viewerRef} className="fixed inset-0 z-50 flex bg-black">
       {/* Top-left controls: hamburger + back */}
       <div className="absolute left-4 top-4 z-[60] flex items-center gap-2">
@@ -441,6 +498,21 @@ export default function PhotoDetailPage() {
         </button>
       </div>
 
+      {/* Archive button */}
+      <button
+        onClick={handleArchive}
+        disabled={archiving}
+        aria-label="Archive photo"
+        title="Archive"
+        className="absolute right-28 top-4 z-[60] rounded-full bg-black/50 p-2 text-white hover:bg-black/70 disabled:opacity-40"
+      >
+        <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="21 8 21 21 3 21 3 8" />
+          <rect x="1" y="3" width="22" height="5" />
+          <line x1="10" y1="12" x2="14" y2="12" />
+        </svg>
+      </button>
+
       {/* Favorite toggle */}
       <button
         onClick={async () => {
@@ -449,6 +521,7 @@ export default function PhotoDetailPage() {
             await toggleFavorite(id, !photo.is_favorite);
             queryClient.invalidateQueries({ queryKey: ['photo', id] });
             queryClient.invalidateQueries({ queryKey: ['photos'] });
+            queryClient.invalidateQueries({ queryKey: ['favorites'] });
           } catch {
             toast.error('Failed to update favorite');
           }
@@ -609,31 +682,45 @@ export default function PhotoDetailPage() {
             pointerEvents: 'none',
           }}
         >
-          {/* sm thumbnail: cached from the grid → renders synchronously, eliminates black flash */}
-          <AuthImage
-            src={getThumbnailUrl(photo.id, 'sm')}
-            alt=""
-            className="absolute inset-0 w-full h-full object-contain select-none"
-            style={{ filter: 'blur(14px)', transform: 'scale(1.06)', opacity: imgLoaded ? 0 : 1, transition: 'opacity 0.15s ease' } as React.CSSProperties}
-            loading="eager"
-          />
-          {/* lg thumbnail: 1600px — shown sharp as the visible placeholder until original loads */}
-          <AuthImage
-            src={getThumbnailUrl(photo.id, 'lg')}
-            alt=""
-            className="absolute inset-0 w-full h-full object-contain select-none"
-            style={{ opacity: imgLoaded ? 0 : 1, transition: 'opacity 0.2s ease' } as React.CSSProperties}
-            loading="eager"
-          />
-          <AuthImage
-            ref={imgRef}
-            src={fullSrc ?? getOriginalUrl(photo.id)}
-            alt={photo.file_name}
-            className="block max-h-full max-w-full object-contain select-none relative"
-            loading="eager"
-            onLoad={() => setImgLoaded(true)}
-            style={{ opacity: imgLoaded ? 1 : 0, transition: 'opacity 0.15s ease' } as React.CSSProperties}
-          />
+          {/* sm thumbnail: nginx-cached, appears instantly to eliminate black flash */}
+          {photo.thumb_sm && (
+            <img
+              src={`/thumbnails/${photo.thumb_sm}`}
+              alt=""
+              className="absolute inset-0 w-full h-full object-contain select-none"
+              style={{ filter: 'blur(14px)', transform: 'scale(1.06)', opacity: imgLoaded ? 0 : 1, transition: 'opacity 0.15s ease' } as React.CSSProperties}
+            />
+          )}
+          {/* lg thumbnail: 1600px nginx-cached — sharp placeholder while original loads */}
+          {photo.thumb_lg && (
+            <img
+              src={`/thumbnails/${photo.thumb_lg}`}
+              alt=""
+              className="absolute inset-0 w-full h-full object-contain select-none"
+              style={{ opacity: imgLoaded ? 0 : 1, transition: 'opacity 0.2s ease' } as React.CSSProperties}
+            />
+          )}
+          {/* Main image: for HEIC use nginx lg directly; for others stream the original */}
+          {isHeicPhoto ? (
+            <img
+              ref={imgRef}
+              src={photo.thumb_lg ? `/thumbnails/${photo.thumb_lg}` : getThumbnailUrl(photo.id, 'lg')}
+              alt={photo.file_name}
+              className="block max-h-full max-w-full object-contain select-none relative"
+              onLoad={() => setImgLoaded(true)}
+              style={{ opacity: imgLoaded ? 1 : 0, transition: 'opacity 0.15s ease' } as React.CSSProperties}
+            />
+          ) : (
+            <AuthImage
+              ref={imgRef}
+              src={originalSrc ?? getOriginalUrl(photo.id)}
+              alt={photo.file_name}
+              className="block max-h-full max-w-full object-contain select-none relative"
+              loading="eager"
+              onLoad={() => setImgLoaded(true)}
+              style={{ opacity: imgLoaded ? 1 : 0, transition: 'opacity 0.15s ease' } as React.CSSProperties}
+            />
+          )}
         </div>
 
         {/* Draw-mode canvas overlay */}
@@ -985,16 +1072,19 @@ export default function PhotoDetailPage() {
           {/* Thumbnail preview */}
           <InfoSection title="Thumbnail">
             <div className="h-24 w-24 overflow-hidden rounded-lg">
-              <AuthImage
-                src={getThumbnailUrl(photo.id, 'sm')}
-                alt="thumb"
-                className="h-full w-full object-cover"
-              />
+              {photo.thumb_sm ? (
+                <img
+                  src={`/thumbnails/${photo.thumb_sm}`}
+                  alt="thumb"
+                  className="h-full w-full object-cover"
+                />
+              ) : null}
             </div>
           </InfoSection>
         </aside>
       )}
     </div>
+    </>
   );
 }
 

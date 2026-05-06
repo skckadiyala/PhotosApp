@@ -49,6 +49,11 @@ class MergePeopleRequest(BaseModel):
     person_id_merge: uuid.UUID
 
 
+class MergeIntoRequest(BaseModel):
+    """Merge one or more source clusters into a target person."""
+    source_ids: list[uuid.UUID]
+
+
 class FaceAssignRequest(BaseModel):
     """Request body for assigning a face to a person."""
     person_id: uuid.UUID | None = None

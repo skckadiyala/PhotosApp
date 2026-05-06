@@ -6,7 +6,6 @@ import { fetchAlbum, addPhotosToAlbum, updateAlbum } from '../api/albums';
 import { fetchPhotos, getThumbnailUrl } from '../api/photos';
 import { useScrollRestore } from '../hooks/useScrollRestore';
 import PhotoCard from '../components/photos/PhotoCard';
-import AuthImage from '../components/common/AuthImage';
 import Spinner from '../components/common/Spinner';
 import EmptyState from '../components/common/EmptyState';
 import type { Photo } from '../types/photo';
@@ -177,10 +176,12 @@ export default function AlbumDetailPage() {
                           : 'border-transparent hover:border-gray-300'
                       }`}
                     >
-                      <AuthImage
-                        src={getThumbnailUrl(photo.id, 'sm')}
+                      <img
+                        src={getThumbnailUrl(photo.id, 'sm', photo.thumb_sm)}
                         alt={photo.file_name}
                         className="h-full w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
                       />
                       {selectedIds.has(photo.id) && (
                         <div className="absolute inset-0 flex items-center justify-center bg-primary-500/30">

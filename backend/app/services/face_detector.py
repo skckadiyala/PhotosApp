@@ -35,62 +35,47 @@ settings = get_settings()
 # ArcFace model name (512-d L2-normalised embeddings).
 RECOGNITION_MODEL = "ArcFace"
 
-# Primary face detector.  RetinaFace is state-of-the-art and handles small /
-# partially-occluded faces well.  We fall back to opencv if the model fails
-# to load (e.g. network issues during first-run weight download).
+# Primary face detector — RetinaFace only, no opencv fallback.
+# opencv Haar cascades produce high false-positive rates on textures,
+# circular objects, and patterns that superficially resemble faces.
+# RetinaFace is accurate enough that a "no detection" result is reliable.
 DETECTOR_BACKEND = "retinaface"
 
-# Minimum face bounding-box dimension.  RetinaFace is reliable down to ~30 px;
-# 40 px avoids tiny false positives while keeping genuine small faces.
-MIN_FACE_PX = 40
+# Minimum face bounding-box dimension in pixels.
+MIN_FACE_PX = 50
 
-# Minimum RetinaFace detection confidence (0–1).  Detections below this are
-# likely to be false positives (background textures, body parts).
-# 0.75 keeps legitimate small/backlit/distant faces while filtering clear noise.
-MIN_FACE_CONFIDENCE = 0.75
+# Minimum RetinaFace confidence score (0–1).
+# 0.92 is strict: keeps real faces in challenging lighting while rejecting
+# false positives on bottles, textures, and non-human objects.
+MIN_FACE_CONFIDENCE = 0.92
+
+# Minimum face area as a fraction of total image area.
+# A genuine face in a photo is rarely smaller than 0.3 % of the image.
+MIN_FACE_AREA_FRACTION = 0.003
 
 # Bounding-box aspect ratio guard: width/height must be within this range.
-# Values outside indicate a sideways crop or partial edge detection.
-MIN_ASPECT_RATIO = 0.45
-MAX_ASPECT_RATIO = 2.20
+MIN_ASPECT_RATIO = 0.5
+MAX_ASPECT_RATIO = 2.0
 
 
-def _represent_with_fallback(image) -> list | None:
-    """
-    Call DeepFace.represent with the primary detector and, if the primary
-    backend finds no faces or fails to initialise, retry with opencv.
-
-    Returns the raw DeepFace results list, or None if no faces were detected.
-    """
-    # Lazy import — keeps TensorFlow out of memory until face detection runs.
+def _represent(image) -> list | None:
+    """Call DeepFace.represent with RetinaFace. Returns results or None."""
     from deepface import DeepFace  # noqa: PLC0415
-
-    last_error = None
-    for backend in (DETECTOR_BACKEND, "opencv"):
-        try:
-            results = DeepFace.represent(
-                img_path=image,
-                model_name=RECOGNITION_MODEL,
-                detector_backend=backend,
-                enforce_detection=True,
-                align=True,
-            )
-            if results:
-                return results
-        except ValueError:
-            # No face found by this backend — try the next one.
-            last_error = "no face found"
-        except Exception as exc:
-            last_error = str(exc)
-            if backend != "opencv":
-                logger.debug(
-                    "detector_backend=%s failed (%s), falling back to opencv",
-                    backend, exc,
-                )
-            else:
-                logger.warning("opencv detection also failed: %s", exc)
-    logger.debug("No faces detected after all backends (%s)", last_error)
-    return None
+    try:
+        results = DeepFace.represent(
+            img_path=image,
+            model_name=RECOGNITION_MODEL,
+            detector_backend=DETECTOR_BACKEND,
+            enforce_detection=True,
+            align=True,
+        )
+        return results or None
+    except ValueError:
+        # RetinaFace found no faces — this is a reliable negative result.
+        return None
+    except Exception as exc:
+        logger.warning("Face detection failed: %s", exc)
+        return None
 
 
 def detect_faces_in_photo(photo_path: str) -> list[dict]:
@@ -111,9 +96,10 @@ def detect_faces_in_photo(photo_path: str) -> list[dict]:
 
     pil_img = Image.open(photo_path)
     pil_img = ImageOps.exif_transpose(pil_img).convert("RGB")
+    img_w, img_h = pil_img.size
     image = np.array(pil_img)
 
-    results_raw = _represent_with_fallback(image)
+    results_raw = _represent(image)
     if not results_raw:
         return []
 
@@ -122,20 +108,26 @@ def detect_faces_in_photo(photo_path: str) -> list[dict]:
         area = r["facial_area"]
         x, y, w, h = area["x"], area["y"], area["w"], area["h"]
 
-        # Skip detections that are too small to be reliable.
+        # Too small to be a real face
         if w < MIN_FACE_PX or h < MIN_FACE_PX:
             continue
 
-        # Skip detections with extreme aspect ratios (partial/cropped faces).
+        # Too small relative to the image (filters distant background faces and false positives)
+        face_fraction = (w * h) / (img_w * img_h) if img_w and img_h else 0
+        if face_fraction < MIN_FACE_AREA_FRACTION:
+            logger.debug("Skipping face: area fraction %.4f < %.3f", face_fraction, MIN_FACE_AREA_FRACTION)
+            continue
+
+        # Extreme aspect ratio → partial crop or non-face object
         aspect = w / h if h > 0 else 0
         if not (MIN_ASPECT_RATIO <= aspect <= MAX_ASPECT_RATIO):
             logger.debug("Skipping face: aspect ratio %.2f out of range", aspect)
             continue
 
-        # Skip low-confidence detections (RetinaFace returns a score 0–1).
-        confidence = r.get("face_confidence", 1.0)
-        if confidence < MIN_FACE_CONFIDENCE:
-            logger.debug("Skipping face: confidence %.3f < %.2f", confidence, MIN_FACE_CONFIDENCE)
+        # RetinaFace confidence — no default of 1.0 to avoid masking missing scores
+        confidence = r.get("face_confidence")
+        if confidence is None or confidence < MIN_FACE_CONFIDENCE:
+            logger.debug("Skipping face: confidence %s < %.2f", confidence, MIN_FACE_CONFIDENCE)
             continue
 
         # facial_area uses (x=left, y=top, w, h); convert to the stored format.

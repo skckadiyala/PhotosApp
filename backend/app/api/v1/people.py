@@ -8,7 +8,7 @@ POST /api/v1/people/{id}/name      — assign a name to a face cluster
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -17,7 +17,7 @@ from app.models.face import Face
 from app.models.person import Person
 from app.models.photo import Photo
 from app.models.user import User
-from app.schemas.face import PersonBase, PersonDetail, PersonNameRequest
+from app.schemas.face import PersonBase, PersonDetail, PersonNameRequest, MergeIntoRequest
 from app.schemas.photo import PhotoBase
 
 router = APIRouter()
@@ -113,6 +113,61 @@ async def name_person(
     person = await _get_person_or_404(db, person_id, user.id)
     person.name = body.name
     return person
+
+
+@router.post("/{person_id}/merge", response_model=PersonBase)
+async def merge_people(
+    person_id: uuid.UUID,
+    body: MergeIntoRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Merge one or more person clusters into this person.
+
+    All faces from the source clusters are reassigned to this person.
+    Source person records are deleted. The target keeps its name if set;
+    otherwise it inherits the name of the largest source.
+    """
+    target = await _get_person_or_404(db, person_id, user.id)
+
+    for source_id in body.source_ids:
+        if source_id == person_id:
+            continue
+        source = await _get_person_or_404(db, source_id, user.id)
+
+        # Inherit name from source if target is unnamed and source is named
+        if not target.name and source.name:
+            target.name = source.name
+
+        # Reassign all faces from source to target in one UPDATE
+        await db.execute(
+            update(Face)
+            .where(Face.person_id == source_id)
+            .values(person_id=person_id)
+        )
+
+        await db.delete(source)
+
+    # Recount faces on the merged person
+    count = await db.execute(
+        select(func.count()).select_from(Face).where(Face.person_id == person_id)
+    )
+    target.face_count = count.scalar() or 0
+
+    # Pick a new representative face (most recent)
+    rep = await db.execute(
+        select(Face.id)
+        .where(Face.person_id == person_id)
+        .order_by(Face.created_at.desc())
+        .limit(1)
+    )
+    rep_id = rep.scalar_one_or_none()
+    if rep_id:
+        target.representative_face_id = rep_id
+
+    await db.commit()
+    await db.refresh(target)
+    return target
 
 
 # ── Helper ───────────────────────────────────────────────────

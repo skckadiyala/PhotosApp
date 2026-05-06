@@ -1,0 +1,20 @@
+from mtcnn import MTCNN
+import cv2
+
+# initialize the MTCNN detector
+detector = MTCNN()
+
+# load the input image and convert it to grayscale
+image = cv2.imread('/Users/kalyan/Projects/SweetWater/PhotosApp/test_photos/IMG_0645.jpeg')
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# detect the face using MTCNN
+faces = detector.detect_faces(image)
+
+# extract the face from the image
+for face in faces:
+    x, y, w, h = face['box']
+    extracted_face = image[y:y+h, x:x+w]
+
+# save the extracted face to the output directory
+cv2.imwrite('/Users/kalyan/Projects/SweetWater/PhotosApp/test_photos/extracted_face.jpg', extracted_face)

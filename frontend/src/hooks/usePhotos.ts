@@ -2,12 +2,24 @@ import { useInfiniteQuery, useQuery, keepPreviousData } from '@tanstack/react-qu
 import {
   fetchPhotos,
   fetchPhoto,
+  fetchFavorites,
   fetchLibrarySummary,
   fetchPhotosByMonth,
   fetchEventClusters,
   fetchEventClusterPhotos,
 } from '../api/photos';
-import type { LibrarySummary, MonthPhotosResponse, EventClusterPhotosResponse } from '../types/photo';
+import type { Photo, LibrarySummary, MonthPhotosResponse, EventClusterPhotosResponse } from '../types/photo';
+
+export function useFavorites() {
+  return useQuery<Photo[]>({
+    queryKey: ['favorites'],
+    queryFn: async () => {
+      const res = await fetchFavorites();
+      return res.items;
+    },
+    staleTime: 60 * 1000,
+  });
+}
 
 export function usePhotos(sort = 'date_taken', media_type?: string) {
   return useInfiniteQuery({
@@ -20,10 +32,10 @@ export function usePhotos(sort = 'date_taken', media_type?: string) {
   });
 }
 
-export function useLibrarySummary() {
+export function useLibrarySummary(mediaType: string = 'image') {
   return useQuery<LibrarySummary>({
-    queryKey: ['library-summary'],
-    queryFn: fetchLibrarySummary,
+    queryKey: ['library-summary', mediaType],
+    queryFn: () => fetchLibrarySummary(mediaType),
     staleTime: 5 * 60 * 1000,  // 5 minutes — single DB query replaces 2000+ page fetches
   });
 }
@@ -33,25 +45,24 @@ export function usePhoto(id: string | undefined) {
     queryKey: ['photo', id],
     queryFn: () => fetchPhoto(id!),
     enabled: !!id,
-    // Keep showing the previous photo while the next one loads — prevents
-    // the grid page from bleeding through during inter-photo navigation.
+    staleTime: 10 * 60 * 1000,  // 10 min — photo metadata rarely changes; avoids re-fetch on back-navigation
     placeholderData: keepPreviousData,
   });
 }
 
-export function usePhotosByMonth(year: number | null, month: number | null) {
+export function usePhotosByMonth(year: number | null, month: number | null, mediaType: string = 'image') {
   return useQuery<MonthPhotosResponse>({
-    queryKey: ['photos-by-month', year, month],
-    queryFn: () => fetchPhotosByMonth(year!, month!),
+    queryKey: ['photos-by-month', year, month, mediaType],
+    queryFn: () => fetchPhotosByMonth(year!, month!, mediaType),
     enabled: year !== null && month !== null,
     staleTime: 5 * 60 * 1000,
   });
 }
 
-export function useEventClusters(gapHours: number = 6) {
+export function useEventClusters(gapHours: number = 6, mediaType: string = 'image') {
   return useInfiniteQuery({
-    queryKey: ['event-clusters', gapHours],
-    queryFn: ({ pageParam = 1 }) => fetchEventClusters({ page: pageParam, limit: 50, gap_hours: gapHours }),
+    queryKey: ['event-clusters', gapHours, mediaType],
+    queryFn: ({ pageParam = 1 }) => fetchEventClusters({ page: pageParam, limit: 50, gap_hours: gapHours, media_type: mediaType }),
     initialPageParam: 1,
     getNextPageParam: (lastPage) =>
       lastPage.page < lastPage.total_pages ? lastPage.page + 1 : undefined,
@@ -59,10 +70,10 @@ export function useEventClusters(gapHours: number = 6) {
   });
 }
 
-export function useEventClusterPhotos(clusterId: number | null, gapHours: number = 6) {
+export function useEventClusterPhotos(clusterId: number | null, gapHours: number = 6, mediaType: string = 'image') {
   return useQuery<EventClusterPhotosResponse>({
-    queryKey: ['event-cluster-photos', clusterId, gapHours],
-    queryFn: () => fetchEventClusterPhotos(clusterId!, gapHours),
+    queryKey: ['event-cluster-photos', clusterId, gapHours, mediaType],
+    queryFn: () => fetchEventClusterPhotos(clusterId!, gapHours, mediaType),
     enabled: clusterId !== null,
     staleTime: 5 * 60 * 1000,
   });

@@ -88,6 +88,8 @@ class MonthPhotosResponse(BaseModel):
 class CoverPhotoInfo(BaseModel):
     """Minimal photo info used as a cover image."""
     id: uuid.UUID
+    thumb_sm: str | None = None
+    thumb_md: str | None = None
 
 
 class MonthSummary(BaseModel):

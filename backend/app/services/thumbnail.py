@@ -8,8 +8,11 @@ Creates 3 sizes:
 
 Thumbnails are stored in ./cache/thumbnails/{sm,md,lg}/{photo_uuid}.jpg
 """
+import gc
 import logging
 import os
+import subprocess
+import tempfile
 
 from PIL import Image, ExifTags
 
@@ -31,35 +34,94 @@ SIZES = {
     "lg": settings.thumb_lg,   # 1600
 }
 
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv", ".flv", ".webm", ".3gp", ".mts", ".m2ts"}
+
+
+def _extract_video_frame(video_path: str) -> Image.Image:
+    """Use ffmpeg to extract a representative frame from a video file."""
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    try:
+        duration = float(probe.stdout.strip())
+        seek = min(duration * 0.1, 5.0)
+    except (ValueError, TypeError):
+        seek = 1.0
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-ss", str(seek),
+                "-i", video_path,
+                "-vframes", "1",
+                "-q:v", "2",
+                tmp_path,
+            ],
+            capture_output=True, timeout=60, check=True,
+        )
+        frame = Image.open(tmp_path)
+        frame.load()  # eagerly load pixels before the temp file is deleted
+        return frame.copy()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
 
 def generate_thumbnails(photo_id: str, source_path: str) -> dict[str, str]:
     """
-    Generate sm/md/lg JPEG thumbnails for a photo.
+    Generate sm/md/lg JPEG thumbnails for a photo or video.
 
     Args:
-        photo_id: UUID string for the photo.
-        source_path: Absolute path to the original image file.
+        photo_id: UUID string for the photo/video.
+        source_path: Absolute path to the original file.
 
     Returns:
         Dict mapping size names to relative thumbnail paths, e.g.
         {"sm": "sm/<uuid>.jpg", "md": "md/<uuid>.jpg", "lg": "lg/<uuid>.jpg"}
     """
-    img = Image.open(source_path)
-    img = _auto_orient(img)
+    ext = os.path.splitext(source_path)[1].lower()
+    if ext in _VIDEO_EXTENSIONS:
+        img = _extract_video_frame(source_path)
+    else:
+        raw = Image.open(source_path)
+        raw.load()  # eagerly load pixels so the file handle can be released
+        img = _auto_orient(raw)
+        if img is not raw:
+            raw.close()
+            del raw
 
     results: dict[str, str] = {}
-    for size_name, max_dim in SIZES.items():
-        rel_path = os.path.join(size_name, f"{photo_id}.jpg")
-        abs_path = os.path.join(settings.thumbnails_dir, rel_path)
-        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    try:
+        for size_name, max_dim in SIZES.items():
+            rel_path = os.path.join(size_name, f"{photo_id}.webp")
+            abs_path = os.path.join(settings.thumbnails_dir, rel_path)
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
 
-        thumb = img.copy()
-        thumb.thumbnail((max_dim, max_dim), Image.LANCZOS)
-        thumb = thumb.convert("RGB")
-        thumb.save(abs_path, "JPEG", quality=85, optimize=True)
+            thumb = img.copy()
+            thumb.thumbnail((max_dim, max_dim), Image.LANCZOS)
+            thumb = thumb.convert("RGB")
+            # WebP at quality=80 is ~40-50% smaller than JPEG/85 at equivalent perceptual quality
+            thumb.save(abs_path, "WEBP", quality=80, method=4)
+            thumb.close()
+            del thumb
 
-        results[size_name] = rel_path
-        logger.debug("Generated %s thumbnail: %s", size_name, rel_path)
+            results[size_name] = rel_path
+    finally:
+        img.close()
+        del img
+        gc.collect()
 
     logger.info("Generated thumbnails for photo %s", photo_id)
     return results

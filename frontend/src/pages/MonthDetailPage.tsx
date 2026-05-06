@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useMemo, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
+import { useUIStore } from '../stores/uiStore';
 import { format } from 'date-fns';
 import { usePhotosByMonth } from '../hooks/usePhotos';
 import JustifiedPhotoGrid from '../components/photos/JustifiedPhotoGrid';
@@ -22,6 +23,7 @@ function parseMonthParams(yearParam?: string, monthParam?: string) {
 export default function MonthDetailPage() {
   const { year: yearParam, month: monthParam } = useParams();
   const { year, month } = parseMonthParams(yearParam, monthParam);
+  const setPageHeader = useUIStore((s) => s.setPageHeader);
 
   const { data, isLoading } = usePhotosByMonth(year, month);
 
@@ -37,6 +39,11 @@ export default function MonthDetailPage() {
     return format(new Date(year, month - 1, 1), 'MMMM yyyy');
   }, [year, month]);
 
+  useEffect(() => {
+    if (data) setPageHeader(heading, `${data.count.toLocaleString()} photos`);
+    return () => setPageHeader(null);
+  }, [heading, data, setPageHeader]);
+
   if (year === null || month === null) {
     return <EmptyState title="Invalid month" description="Please select a valid month from Library > Months." />;
   }
@@ -49,51 +56,14 @@ export default function MonthDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="sticky top-0 z-20 -mx-4 border-b border-gray-100 bg-white/95 px-4 py-3 backdrop-blur-sm grid items-center gap-3"
-        style={{ gridTemplateColumns: '1fr auto 1fr' }}
-      >
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">{heading}</h1>
-          <p className="text-sm text-gray-500">{data.count.toLocaleString()} photos</p>
-        </div>
-
-        <div className="flex items-center gap-0.5 rounded-lg bg-gray-100 p-1">
-          <Link to="/library?view=years" className="rounded-md px-4 py-1.5 text-sm font-medium text-gray-500 hover:text-gray-700">
-            Years
-          </Link>
-          <Link to="/library?view=months" className="rounded-md bg-white px-4 py-1.5 text-sm font-medium text-gray-900 shadow-sm">
-            Months
-          </Link>
-          <Link to="/library?view=all" className="rounded-md px-4 py-1.5 text-sm font-medium text-gray-500 hover:text-gray-700">
-            All Photos
-          </Link>
-        </div>
-
-        <div className="flex justify-end">
-          <Link
-            to={`/library?view=months&year=${year}`}
-            className="text-sm font-medium text-primary-600 hover:text-primary-700"
-          >
-            Back to Months
-          </Link>
-        </div>
-      </div>
-
       <div className="space-y-8">
-        {eventClusters.map((cluster, eventIndex) => (
+        {eventClusters.map((cluster) => (
           <section
             key={cluster.key}
             id={`event-${cluster.key}`}
             data-event-key={cluster.key}
             className="space-y-5"
           >
-            <div className="sticky top-28 z-10 rounded-md bg-white/90 px-2 py-1 backdrop-blur-sm">
-              <h2 className="text-base font-semibold text-gray-900">
-                Event {eventIndex + 1}: {cluster.title}
-              </h2>
-              <p className="text-xs text-gray-500">{cluster.subtitle}</p>
-            </div>
-
             <div className="space-y-5">
               {cluster.groups.map((group) => (
                 <section key={group.key} className="space-y-2">

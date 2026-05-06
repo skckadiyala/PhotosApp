@@ -55,7 +55,7 @@ export default function Sidebar() {
   return (
     <aside
       className={clsx(
-        'fixed left-0 top-0 z-30 flex h-full flex-col bg-white border-r border-gray-200 transition-all duration-200',
+        'fixed left-0 top-0 z-30 hidden md:flex flex-col h-full bg-white border-r border-gray-200 transition-all duration-200',
         sidebarOpen ? 'w-64' : 'w-16',
       )}
     >

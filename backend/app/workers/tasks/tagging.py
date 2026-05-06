@@ -49,7 +49,12 @@ TAG_CATEGORIES = {
 def auto_tag_photo(self, photo_id: str, file_path: str):
     """Use CLIP to auto-tag a photo with scene/object labels."""
     try:
-        import torch
+        try:
+            import torch
+        except ImportError:
+            logger.info("torch not available — skipping auto-tagging for %s", photo_id)
+            return None  # Not installed; don't retry, just skip silently
+
         from PIL import Image
 
         full_path = os.path.join(settings.photos_dir, file_path)

@@ -94,9 +94,6 @@ def _get_or_create_location(db: Session, lat: float, lng: float) -> Location:
     db.add(loc)
     db.flush()
     logger.info("Created location: %s (%s, %s)", geo.get("formatted", "?"), rounded_lat, rounded_lng)
-
-    # Nominatim rate limit: max 1 request/second
-    time.sleep(1.1)
     return loc
 
 

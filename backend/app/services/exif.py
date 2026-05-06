@@ -98,6 +98,11 @@ def extract_metadata(file_path: str) -> PhotoMetadata:
         meta.taken_at = fn_date or vm.get("taken_at")
         meta.width = vm.get("width") or 0
         meta.height = vm.get("height") or 0
+        if not meta.taken_at:
+            try:
+                meta.taken_at = datetime.utcfromtimestamp(os.path.getmtime(file_path))
+            except OSError:
+                pass
         return meta
 
     # --- Image dimensions via Pillow ---
@@ -134,6 +139,14 @@ def extract_metadata(file_path: str) -> PhotoMetadata:
     # Correct width/height based on orientation if needed
     if meta.orientation in (5, 6, 7, 8) and meta.width and meta.height:
         meta.width, meta.height = meta.height, meta.width
+
+    # Fall back to file mtime when EXIF carries no date — far better than
+    # the DB created_at (scan date) that ends up grouping everything in 2026.
+    if not meta.taken_at:
+        try:
+            meta.taken_at = datetime.utcfromtimestamp(os.path.getmtime(file_path))
+        except OSError:
+            pass
 
     return meta
 

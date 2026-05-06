@@ -7,13 +7,14 @@ GET /api/v1/photos/{photo_id}/thumbnail?size=medium
 GET /api/v1/photos/{photo_id}/original
 GET /api/v1/photos/metadata/{photo_id}
 """
+import asyncio
 import logging
 import os
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -98,21 +99,26 @@ async def list_photos(
 
 @router.get("/library-summary", response_model=LibrarySummaryResponse)
 async def get_library_summary(
+    media_type: str = Query(default="image", pattern="^(image|video)$"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Return year/month groups with counts and cover photos in a single DB query.
 
-    Used by the Library page Years/Months views — replaces fetching all N pages.
+    media_type: 'image' (default) or 'video'
     """
     import calendar
     from sqlalchemy import text
+
+    mime_prefix = f"{media_type}/%"
 
     rows = (await db.execute(
         text("""
             WITH ranked AS (
                 SELECT
                     id AS photo_id,
+                    thumb_sm,
+                    thumb_md,
                     EXTRACT(YEAR  FROM COALESCE(taken_at, created_at))::int AS yr,
                     EXTRACT(MONTH FROM COALESCE(taken_at, created_at))::int AS mo,
                     ROW_NUMBER() OVER (
@@ -129,14 +135,14 @@ async def get_library_summary(
                 FROM photos
                 WHERE user_id = :uid
                   AND is_hidden = false
-                  AND mime_type LIKE 'image/%'
+                  AND mime_type LIKE :mime_prefix
             )
-            SELECT yr, mo, cnt, photo_id
+            SELECT yr, mo, cnt, photo_id, thumb_sm, thumb_md
             FROM   ranked
             WHERE  rn <= 4
             ORDER  BY yr DESC, mo DESC, rn ASC
         """),
-        {"uid": str(user.id)},
+        {"uid": str(user.id), "mime_prefix": mime_prefix},
     )).fetchall()
 
     # Build month -> year structure in Python
@@ -153,7 +159,7 @@ async def get_library_summary(
                 "count": cnt,
                 "cover_photos": [],
             }
-        months_dict[key]["cover_photos"].append({"id": photo_id})
+        months_dict[key]["cover_photos"].append({"id": photo_id, "thumb_sm": row.thumb_sm, "thumb_md": row.thumb_md})
 
     years_dict: dict[int, dict] = {}
     for (yr, mo), mdata in months_dict.items():
@@ -178,13 +184,13 @@ async def get_library_summary(
 async def list_photos_by_month(
     year: int = Query(..., ge=1900, le=2200),
     month: int = Query(..., ge=1, le=12),
+    media_type: str = Query(default="image", pattern="^(image|video)$"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Return all image photos for a given calendar month.
+    """Return all photos for a given calendar month.
 
-    This endpoint is optimized for direct navigation from Months view, avoiding
-    deep infinite-scroll traversal for large libraries.
+    media_type: 'image' (default) or 'video'
     """
     date_expr = func.coalesce(Photo.taken_at, Photo.created_at)
 
@@ -193,7 +199,7 @@ async def list_photos_by_month(
         .where(
             Photo.user_id == user.id,
             Photo.is_hidden.is_(False),
-            Photo.mime_type.like("image/%"),
+            Photo.mime_type.like(f"{media_type}/%"),
             func.extract("year", date_expr) == year,
             func.extract("month", date_expr) == month,
         )
@@ -216,18 +222,93 @@ async def list_event_clusters(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
     gap_hours: int = Query(default=6, ge=1, le=72),
+    media_type: str = Query(default="image", pattern="^(image|video)$"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """List adaptive event clusters (folder-like groups) for All Photos.
+    """List adaptive event clusters (folder-like groups) for All Photos or All Videos.
 
-    Clustering rule: if gap between consecutive photos is greater than
+    Reads from the pre-computed photo_clusters table when available (fast path).
+    Falls back to the live 7-CTE query if the table hasn't been populated yet.
+
+    Clustering rule: if gap between consecutive items is greater than
     ``gap_hours``, start a new cluster.
+    media_type: 'image' (default) or 'video'
     """
     from sqlalchemy import text
 
+    # ── Fast path: read from materialized photo_clusters table ────────────────
+    # Count using the is_cover partial index — one cover row per cluster.
+    materialized_count_row = (await db.execute(
+        text("""
+            SELECT COUNT(*)
+            FROM photo_clusters
+            WHERE user_id = :uid
+              AND media_type = :media_type
+              AND gap_hours = :gap_hours
+              AND is_cover = true
+        """),
+        {"uid": str(user.id), "media_type": media_type, "gap_hours": gap_hours},
+    )).scalar()
+
+    if materialized_count_row and materialized_count_row > 0:
+        total_clusters = int(materialized_count_row)
+        total_pages = (total_clusters + limit - 1) // limit
+
+        # JOIN photos for thumb_sm in one query (avoids N+1 correlated subquery).
+        # cluster_id=0 is the newest event so ORDER BY cluster_id ASC = newest first.
+        cluster_rows = (await db.execute(
+            text("""
+                SELECT
+                    pc.cluster_id,
+                    pc.cluster_start AS start_at,
+                    pc.cluster_end AS end_at,
+                    pc.cluster_count AS cnt,
+                    pc.photo_id AS cover_photo_id,
+                    ph.thumb_sm AS cover_thumb_sm,
+                    ph.thumb_md AS cover_thumb_md
+                FROM photo_clusters pc
+                JOIN photos ph ON ph.id = pc.photo_id
+                WHERE pc.user_id = :uid
+                  AND pc.media_type = :media_type
+                  AND pc.gap_hours = :gap_hours
+                  AND pc.is_cover = true
+                ORDER BY pc.cluster_id ASC
+                LIMIT :limit OFFSET :offset
+            """),
+            {
+                "uid": str(user.id),
+                "media_type": media_type,
+                "gap_hours": gap_hours,
+                "limit": limit,
+                "offset": (page - 1) * limit,
+            },
+        )).fetchall()
+
+        items = [
+            {
+                "cluster_id": int(row.cluster_id),
+                "start_at": row.start_at,
+                "end_at": row.end_at,
+                "count": int(row.cnt),
+                "cover_photo": {"id": row.cover_photo_id, "thumb_sm": row.cover_thumb_sm, "thumb_md": row.cover_thumb_md}
+                               if row.cover_photo_id else None,
+            }
+            for row in cluster_rows
+        ]
+
+        return PaginatedEventClusters(
+            items=items,
+            page=page,
+            limit=limit,
+            total=total_clusters,
+            total_pages=total_pages,
+        )
+
+    # ── Slow fallback: live 7-CTE query (used until first cluster rebuild) ────
     gap_seconds = gap_hours * 3600
     offset = (page - 1) * limit
+    mime_prefix = f"{media_type}/%"
 
     rows = (await db.execute(
         text("""
@@ -236,7 +317,7 @@ async def list_event_clusters(
                 FROM photos
                 WHERE user_id = :uid
                   AND is_hidden = false
-                  AND mime_type LIKE 'image/%'
+                  AND mime_type LIKE :mime_prefix
             ),
             ordered AS (
                 SELECT id, ts,
@@ -281,11 +362,14 @@ async def list_event_clusters(
                    p.start_at,
                    p.end_at,
                    p.cnt,
-                   r.id AS cover_photo_id
+                   r.id AS cover_photo_id,
+                   ph.thumb_sm AS cover_thumb_sm,
+                   ph.thumb_md AS cover_thumb_md
             FROM paged p
             LEFT JOIN ranked r
               ON r.cluster_id = p.cluster_id
              AND r.rn = 1
+            LEFT JOIN photos ph ON ph.id = r.id
             ORDER BY p.start_at DESC
         """),
         {
@@ -293,6 +377,7 @@ async def list_event_clusters(
             "gap_seconds": gap_seconds,
             "offset": offset,
             "limit": limit,
+            "mime_prefix": mime_prefix,
         },
     )).fetchall()
 
@@ -303,7 +388,7 @@ async def list_event_clusters(
                 FROM photos
                 WHERE user_id = :uid
                   AND is_hidden = false
-                  AND mime_type LIKE 'image/%'
+                  AND mime_type LIKE :mime_prefix
             ),
             ordered AS (
                 SELECT id, ts,
@@ -329,6 +414,7 @@ async def list_event_clusters(
         {
             "uid": str(user.id),
             "gap_seconds": gap_seconds,
+            "mime_prefix": mime_prefix,
         },
     )).scalar() or 0
 
@@ -340,7 +426,7 @@ async def list_event_clusters(
             "start_at": row.start_at,
             "end_at": row.end_at,
             "count": int(row.cnt),
-            "cover_photo": {"id": row.cover_photo_id} if row.cover_photo_id else None,
+            "cover_photo": {"id": row.cover_photo_id, "thumb_sm": row.cover_thumb_sm, "thumb_md": row.cover_thumb_md} if row.cover_photo_id else None,
         }
         for row in rows
     ]
@@ -358,13 +444,61 @@ async def list_event_clusters(
 async def get_event_cluster_photos(
     cluster_id: int,
     gap_hours: int = Query(default=6, ge=1, le=72),
+    media_type: str = Query(default="image", pattern="^(image|video)$"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Return all photos inside one adaptive event cluster."""
+    """Return all items inside one adaptive event cluster.
+
+    Reads photo IDs from the pre-computed photo_clusters table when available,
+    then fetches full Photo objects for those IDs.
+    Falls back to the live CTE query when the table hasn't been populated yet.
+
+    media_type: 'image' (default) or 'video'
+    """
     from sqlalchemy import text
 
+    # ── Fast path: read photo IDs from materialized table ─────────────────────
+    mat_rows = (await db.execute(
+        text("""
+            SELECT pc.photo_id, pc.cluster_start, pc.cluster_end
+            FROM photo_clusters pc
+            WHERE pc.user_id = :uid
+              AND pc.media_type = :media_type
+              AND pc.gap_hours = :gap_hours
+              AND pc.cluster_id = :cluster_id
+            ORDER BY pc.cluster_start DESC NULLS LAST
+        """),
+        {
+            "uid": str(user.id),
+            "media_type": media_type,
+            "gap_hours": gap_hours,
+            "cluster_id": cluster_id,
+        },
+    )).fetchall()
+
+    if mat_rows:
+        photo_ids = [row.photo_id for row in mat_rows]
+        photo_result = await db.execute(
+            select(Photo).where(Photo.id.in_(photo_ids), Photo.user_id == user.id)
+        )
+        by_id = {str(p.id): p for p in photo_result.scalars().all()}
+        items = [by_id[str(pid)] for pid in photo_ids if str(pid) in by_id]
+        start_at = mat_rows[0].cluster_start
+        end_at = mat_rows[-1].cluster_end
+
+        return EventClusterPhotosResponse(
+            cluster_id=cluster_id,
+            gap_hours=gap_hours,
+            start_at=start_at,
+            end_at=end_at,
+            count=len(items),
+            items=items,
+        )
+
+    # ── Slow fallback: live CTE query ─────────────────────────────────────────
     gap_seconds = gap_hours * 3600
+    mime_prefix = f"{media_type}/%"
 
     rows = (await db.execute(
         text("""
@@ -373,7 +507,7 @@ async def get_event_cluster_photos(
                 FROM photos
                 WHERE user_id = :uid
                   AND is_hidden = false
-                  AND mime_type LIKE 'image/%'
+                  AND mime_type LIKE :mime_prefix
             ),
             ordered AS (
                 SELECT id, ts,
@@ -404,6 +538,7 @@ async def get_event_cluster_photos(
             "uid": str(user.id),
             "gap_seconds": gap_seconds,
             "cluster_id": cluster_id,
+            "mime_prefix": mime_prefix,
         },
     )).fetchall()
 
@@ -425,6 +560,79 @@ async def get_event_cluster_photos(
         count=len(items),
         items=items,
     )
+
+
+class ArchiveRequest(BaseModel):
+    photo_ids: list[str]
+
+
+def _move_to_archive(src_path: str, photo_id_str: str) -> str:
+    """Synchronous file move — runs in a thread to avoid blocking the event loop."""
+    archive_dir = os.path.join(os.path.dirname(src_path), "._archive")
+    os.makedirs(archive_dir, exist_ok=True)
+    dst_name = os.path.basename(src_path)
+    dst_path = os.path.join(archive_dir, dst_name)
+    if os.path.exists(dst_path):
+        base, ext = os.path.splitext(dst_name)
+        dst_path = os.path.join(archive_dir, f"{base}_{photo_id_str[:8]}{ext}")
+    os.rename(src_path, dst_path)
+    return dst_path
+
+
+@router.post("/archive")
+async def archive_photos(
+    body: ArchiveRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Move selected photos/videos to ._archive/ under their source directory and mark them hidden."""
+    if not body.photo_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No photo IDs provided")
+
+    # Validate UUIDs up front
+    valid: list[tuple[str, uuid.UUID]] = []
+    errors: list[dict] = []
+    for photo_id_str in body.photo_ids:
+        try:
+            valid.append((photo_id_str, uuid.UUID(photo_id_str)))
+        except ValueError:
+            errors.append({"id": photo_id_str, "error": "Invalid UUID"})
+
+    if not valid:
+        return {"archived": [], "errors": errors}
+
+    # Single query to fetch all photos at once
+    valid_uuids = [uid for _, uid in valid]
+    result = await db.execute(
+        select(Photo).where(Photo.id.in_(valid_uuids), Photo.user_id == user.id)
+    )
+    photo_map = {str(p.id): p for p in result.scalars().all()}
+
+    archived: list[str] = []
+
+    for photo_id_str, _ in valid:
+        photo = photo_map.get(photo_id_str)
+        if not photo:
+            errors.append({"id": photo_id_str, "error": "Not found"})
+            continue
+
+        src_path = safe_resolve(settings.photos_dir, photo.file_path)
+        if not await asyncio.to_thread(os.path.isfile, src_path):
+            errors.append({"id": photo_id_str, "error": "File not found on disk"})
+            continue
+
+        try:
+            dst_path = await asyncio.to_thread(_move_to_archive, src_path, photo_id_str)
+        except OSError as exc:
+            errors.append({"id": photo_id_str, "error": str(exc)})
+            continue
+
+        photo.file_path = os.path.relpath(dst_path, settings.photos_dir)
+        photo.is_hidden = True
+        archived.append(photo_id_str)
+
+    await db.commit()
+    return {"archived": archived, "errors": errors}
 
 
 @router.get("/metadata/{photo_id}", response_model=PhotoMetadataResponse)
@@ -467,9 +675,17 @@ async def get_photo(
     return detail
 
 
+_THUMB_FALLBACK: dict[str, list[str]] = {
+    "sm": ["sm", "md", "lg"],
+    "md": ["md", "lg", "sm"],
+    "lg": ["lg", "md", "sm"],
+}
+
+
 @router.get("/{photo_id}/thumbnail")
 async def serve_thumbnail(
     photo_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     size: str = Query(default="medium"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -477,6 +693,9 @@ async def serve_thumbnail(
     """
     Serve a thumbnail image.
     size: small (200px), medium (800px), or large (1600px).
+
+    Falls back to the next available size if the requested one is missing.
+    Queues on-demand generation when no thumbnail exists yet.
     """
     size_key = VALID_THUMB_SIZES.get(size)
     if not size_key:
@@ -487,24 +706,50 @@ async def serve_thumbnail(
 
     photo = await _get_photo_or_404(db, photo_id, user.id)
 
-    thumb_rel = getattr(photo, f"thumb_{size_key}")
-    if not thumb_rel:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thumbnail not generated yet",
-        )
+    for try_size in _THUMB_FALLBACK[size_key]:
+        thumb_rel = getattr(photo, f"thumb_{try_size}")
+        if not thumb_rel:
+            continue
+        thumb_path = safe_resolve(settings.thumbnails_dir, thumb_rel)
+        if os.path.isfile(thumb_path):
+            return FileResponse(
+                thumb_path,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            )
 
-    thumb_path = safe_resolve(settings.thumbnails_dir, thumb_rel)
-    if not os.path.isfile(thumb_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thumbnail file missing from disk",
-        )
+    # No thumbnail found — generate in background so it's ready on next request
+    photo_id_str = str(photo.id)
+    file_path = photo.file_path
 
-    return FileResponse(
-        thumb_path,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    def _gen():
+        from app.services.thumbnail import generate_thumbnails as _svc
+        from app.core.database import get_sync_db
+        from app.models.photo import Photo as PhotoModel
+        from sqlalchemy import select as _select
+        try:
+            full_path = os.path.join(settings.photos_dir, file_path)
+            thumbs = _svc(photo_id_str, full_path)
+            db_sync = get_sync_db()
+            try:
+                p = db_sync.execute(_select(PhotoModel).where(PhotoModel.id == photo_id_str)).scalar_one_or_none()
+                if p:
+                    p.thumb_sm = thumbs.get("sm")
+                    p.thumb_md = thumbs.get("md")
+                    p.thumb_lg = thumbs.get("lg")
+                    p.is_processed = True
+                    db_sync.commit()
+            finally:
+                db_sync.close()
+            logger.info("On-demand thumbnails generated for photo %s", photo_id_str)
+        except Exception:
+            logger.warning("On-demand thumbnail generation failed for photo %s", photo_id_str, exc_info=True)
+
+    background_tasks.add_task(_gen)
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Thumbnail not available — generation queued",
     )
 
 
@@ -514,7 +759,12 @@ async def serve_original(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Stream the full original photo file."""
+    """Serve the full original photo via nginx X-Accel-Redirect.
+
+    Auth is enforced here; nginx serves the file directly from disk so the
+    Python worker is not blocked streaming bytes.
+    """
+    import urllib.parse
     photo = await _get_photo_or_404(db, photo_id, user.id)
 
     full_path = safe_resolve(settings.photos_dir, photo.file_path)
@@ -524,20 +774,14 @@ async def serve_original(
             detail="Original file not found on disk",
         )
 
-    file_size = os.path.getsize(full_path)
-
-    def _stream():
-        with open(full_path, "rb") as f:
-            while chunk := f.read(1024 * 64):
-                yield chunk
-
-    return StreamingResponse(
-        _stream(),
-        media_type=photo.mime_type,
+    accel_path = "/protected-photos/" + urllib.parse.quote(photo.file_path, safe="/")
+    return Response(
+        status_code=200,
         headers={
+            "X-Accel-Redirect": accel_path,
+            "Content-Type": photo.mime_type,
             "Content-Disposition": f'inline; filename="{photo.file_name}"',
-            "Content-Length": str(file_size),
-            "Cache-Control": "public, max-age=86400",
+            "Cache-Control": "private, max-age=86400",
         },
     )
 
@@ -548,8 +792,12 @@ async def stream_video(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user_token_param),
 ):
-    """Stream a video file using a ?token= query param (for <video> tags that
-    cannot send Authorization headers)."""
+    """Serve a video via nginx X-Accel-Redirect (token auth for <video> tags).
+
+    nginx handles byte-range requests natively so video seeking works without
+    buffering the file through Python.
+    """
+    import urllib.parse
     photo = await _get_photo_or_404(db, photo_id, user.id)
 
     if not photo.mime_type.startswith("video/"):
@@ -559,21 +807,14 @@ async def stream_video(
     if not os.path.isfile(full_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video file not found on disk")
 
-    file_size = os.path.getsize(full_path)
-
-    def _stream():
-        with open(full_path, "rb") as f:
-            while chunk := f.read(1024 * 64):
-                yield chunk
-
-    return StreamingResponse(
-        _stream(),
-        media_type=photo.mime_type,
+    accel_path = "/protected-photos/" + urllib.parse.quote(photo.file_path, safe="/")
+    return Response(
+        status_code=200,
         headers={
+            "X-Accel-Redirect": accel_path,
+            "Content-Type": photo.mime_type,
             "Content-Disposition": f'inline; filename="{photo.file_name}"',
-            "Content-Length": str(file_size),
-            "Cache-Control": "public, max-age=86400",
-            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, max-age=86400",
         },
     )
 

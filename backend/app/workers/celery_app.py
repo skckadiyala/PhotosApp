@@ -20,10 +20,20 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     task_routes={
+        # Module-path globs (matched when task is called via module, not registered name)
         "app.workers.tasks.thumbnail.*": {"queue": "thumbnails"},
         "app.workers.tasks.metadata.*": {"queue": "metadata"},
         "app.workers.tasks.faces.*": {"queue": "faces"},
         "app.workers.tasks.tagging.*": {"queue": "tagging"},
+        "app.workers.tasks.cluster.*": {"queue": "metadata"},
+        "app.workers.tasks.geocoder.*": {"queue": "metadata"},
+        # Explicit registered task-name routes (used when task is dispatched by name)
+        "generate_thumbnails": {"queue": "thumbnails"},
+        "extract_metadata": {"queue": "metadata"},
+        "detect_faces": {"queue": "faces"},
+        "auto_tag_photo": {"queue": "tagging"},
+        "rebuild_clusters": {"queue": "metadata"},
+        "geocode_photo": {"queue": "metadata"},
     },
     task_default_queue="metadata",
 )
@@ -34,4 +44,6 @@ celery_app.autodiscover_tasks([
     "app.workers.tasks.metadata",
     "app.workers.tasks.faces",
     "app.workers.tasks.tagging",
+    "app.workers.tasks.cluster",
+    "app.workers.tasks.geocoder",
 ])

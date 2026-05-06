@@ -42,11 +42,23 @@ async def lifespan(app: FastAPI):
             stats = scan_library(user_id=user_id)
             logger.info("Startup scan results: %s", stats)
 
-            # Reverse-geocode up to 200 photos per startup so we make
-            # incremental progress without blocking the server for hours.
-            from app.services.geocoder import geocode_all_photos
-            geo_stats = geocode_all_photos(user_id=user_id, max_batch=200)
-            logger.info("Startup geocoding: %s", geo_stats)
+            # Dispatch up to 200 geocoding tasks — non-blocking, rate-limited
+            # via Celery countdown so the startup thread is freed immediately.
+            try:
+                from app.workers.tasks.geocoder import dispatch_geocode_batch
+                geo_stats = dispatch_geocode_batch(user_id=user_id, max_batch=200)
+                logger.info("Startup geocoding dispatched: %s", geo_stats)
+            except Exception:
+                logger.warning("Could not dispatch geocoding batch", exc_info=True)
+
+            # Rebuild event cluster materialization so the All Photos view
+            # is fast immediately after startup without waiting for a manual scan.
+            try:
+                from app.workers.tasks.cluster import rebuild_clusters
+                rebuild_clusters.delay(user_id)
+                logger.info("Cluster rebuild queued after startup scan")
+            except Exception:
+                logger.warning("Could not dispatch startup cluster rebuild", exc_info=True)
         except Exception:
             logger.error("Startup scan failed", exc_info=True)
 
@@ -93,41 +105,53 @@ async def trigger_scan(
     background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
 ):
-    """Trigger a full library scan + face detection + clustering (admin only). Runs in the background."""
+    """Trigger a full library scan (admin only).
+
+    New files get DB records inserted and their processing pipeline
+    (thumbnails, metadata, face detection) dispatched to Celery workers.
+    Geocoding is dispatched as Celery tasks so the scan thread is not blocked.
+    """
     from app.services.scanner import scan_library
-    from app.services.face_detector import process_all_photos
-    from app.services.face_cluster import cluster_faces
-    from app.services.geocoder import geocode_all_photos
+    from app.workers.tasks.geocoder import dispatch_geocode_batch
 
-    def _scan_and_detect(uid: str):
+    def _scan(uid: str):
         scan_library(user_id=uid)
-        face_stats = process_all_photos(user_id=uid)
-        if face_stats.get("total_faces", 0) > 0:
-            cluster_faces(uid)
-        geocode_all_photos(user_id=uid)
+        dispatch_geocode_batch(user_id=uid, max_batch=500)
+        # Rebuild event cluster materialization after scan so the All Photos
+        # view reads pre-computed rows instead of running the 7-CTE chain.
+        try:
+            from app.workers.tasks.cluster import rebuild_clusters
+            rebuild_clusters.delay(uid)
+        except Exception:
+            logger.warning("Could not dispatch cluster rebuild after scan", exc_info=True)
 
-    background_tasks.add_task(_scan_and_detect, str(user.id))
-    return {"message": "Library scan started (includes face detection)", "status": "running"}
+    background_tasks.add_task(_scan, str(user.id))
+    return {"message": "Library scan started — processing dispatched to workers", "status": "running"}
+
+
+@app.post("/api/v1/rebuild-clusters")
+async def rebuild_clusters_endpoint(
+    user: User = Depends(require_admin),
+):
+    """Rebuild the event cluster materialization table (admin only).
+
+    Triggers a Celery task that re-computes all cluster assignments for this
+    user and persists them to photo_clusters.  The All Photos / All Videos views
+    will read the updated table on the next request.
+    """
+    from app.workers.tasks.cluster import rebuild_clusters
+    rebuild_clusters.delay(str(user.id))
+    return {"message": "Cluster rebuild queued — All Photos view will update shortly", "status": "running"}
 
 
 @app.post("/api/v1/rescan-faces")
 async def rescan_faces(
-    background_tasks: BackgroundTasks,
     user: User = Depends(require_admin),
 ):
-    """Re-detect all faces with improved embeddings and re-cluster (admin only)."""
-    from app.services.face_detector import reprocess_all_photos
-    from app.services.face_cluster import cluster_faces
-
-    def _rescan(uid: str):
-        face_stats = reprocess_all_photos(user_id=uid)
-        logger.info("Face reprocessing: %s", face_stats)
-        if face_stats.get("total_faces", 0) > 0:
-            cluster_stats = cluster_faces(uid)
-            logger.info("Re-clustering: %s", cluster_stats)
-
-    background_tasks.add_task(_rescan, str(user.id))
-    return {"message": "Face re-scan started (reprocess + recluster)", "status": "running"}
+    """Queue bulk face detection + clustering in the dedicated face_worker container."""
+    from app.workers.tasks.faces import run_bulk_face_scan
+    run_bulk_face_scan.delay(str(user.id))
+    return {"message": "Face scan queued — running in face_worker container", "status": "running"}
 
 
 @app.post("/api/v1/refresh-video-metadata")

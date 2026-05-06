@@ -1,16 +1,17 @@
 """
 Recursive photo scanner.
 
-Walks PHOTOS_DIR, discovers image files, and for each:
+Walks PHOTOS_DIR, discovers image files, and for each new file:
   1. Computes SHA-256 hash (dedup)
-  2. Extracts EXIF metadata
-  3. Generates 3 thumbnail sizes
-  4. Inserts a Photo row into PostgreSQL
+  2. Extracts EXIF metadata (lightweight — no image decode)
+  3. Inserts a Photo row into PostgreSQL
+  4. Dispatches the full processing pipeline to Celery workers
+     (thumbnails, metadata, face detection, tagging run out-of-process)
 
-Can be run as:
-    python -m app.services.scanner          # full scan
-    python -m app.services.scanner --dry    # dry-run (list files only)
+Keeping thumbnail generation and face detection OUT of the scanner means
+the backend process stays lightweight regardless of library size.
 """
+import gc
 import hashlib
 import logging
 import os
@@ -25,43 +26,41 @@ from app.models import Base
 from app.models.photo import Photo
 from app.models.user import User
 from app.services.exif import extract_metadata
-from app.services.thumbnail import generate_thumbnails
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# Commit and dispatch Celery tasks in batches to keep the SQLAlchemy session
+# small and let workers start processing while the scan is still running.
+_BATCH_SIZE = 50
+
 
 def compute_file_hash(path: str, chunk_size: int = 65536) -> str:
-    """Compute SHA-256 hash of a file."""
     sha256 = hashlib.sha256()
     with open(path, "rb") as f:
-        while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
-                break
+        while chunk := f.read(chunk_size):
             sha256.update(chunk)
     return sha256.hexdigest()
 
 
-def discover_files(root: str) -> list[str]:
-    """Recursively find all supported image files under root."""
-    found: list[str] = []
-    for dirpath, _dirnames, filenames in os.walk(root):
+def discover_files(root: str):
+    """Yield absolute paths of all supported files under root (generator)."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         for fname in filenames:
-            ext = os.path.splitext(fname)[1].lower()
-            if ext in settings.supported_extensions:
-                found.append(os.path.join(dirpath, fname))
-    found.sort()
-    return found
+            if fname.startswith("."):
+                continue
+            if os.path.splitext(fname)[1].lower() in settings.supported_extensions:
+                yield os.path.join(dirpath, fname)
 
 
 def scan_library(user_id: str, dry_run: bool = False) -> dict:
     """
-    Scan the photos directory and index all photos into the database.
+    Scan the photos directory and index new files into the database.
 
-    Args:
-        user_id: UUID string of the user who owns these photos.
-        dry_run: If True, only list files without indexing.
+    New files get a lightweight DB record inserted immediately, then the
+    full processing pipeline (thumbnails, EXIF, faces, tags) is dispatched
+    to Celery workers.  The backend process never loads image pixel data.
 
     Returns:
         Stats dict: {total_found, new_indexed, skipped_existing, errors}
@@ -74,54 +73,52 @@ def scan_library(user_id: str, dry_run: bool = False) -> dict:
     logger.info("Scanning %s for photos...", photos_dir)
     t0 = time.time()
 
-    files = discover_files(photos_dir)
-    total_found = len(files)
-    logger.info("Found %d image files", total_found)
-
     if dry_run:
-        for f in files:
-            print(os.path.relpath(f, photos_dir))
-        return {"total_found": total_found, "dry_run": True}
+        count = 0
+        for path in discover_files(photos_dir):
+            print(os.path.relpath(path, photos_dir))
+            count += 1
+        return {"total_found": count, "dry_run": True}
 
-    stats = {"total_found": total_found, "new_indexed": 0, "skipped_existing": 0, "errors": 0}
+    stats = {"total_found": 0, "new_indexed": 0, "skipped_existing": 0, "errors": 0}
     db = get_sync_db()
 
     try:
-        # Pre-load existing file paths AND hashes in a single query for fast
-        # O(1) dedup.  Checking path first avoids reading any file from disk
-        # for photos that are already indexed — critical for 100K+ libraries.
+        # Load existing paths and hashes into plain Python sets so we can do
+        # O(1) lookups without touching the SQLAlchemy identity map.
         existing_paths: set[str] = set()
         existing_hashes: set[str] = set()
-        result = db.execute(
-            select(Photo.file_path, Photo.file_hash).where(Photo.user_id == user_id)
-        )
-        for row in result:
+        for row in db.execute(select(Photo.file_path, Photo.file_hash).where(Photo.user_id == user_id)):
             existing_paths.add(row[0])
-            existing_hashes.add(row[1])
+            if row[1]:
+                existing_hashes.add(row[1])
         logger.info("Found %d existing photos in database", len(existing_paths))
 
-        for i, abs_path in enumerate(files, 1):
+        # Batch of (photo_id, rel_path) pairs accumulated between commits.
+        # Tasks are dispatched only after the DB row is committed so workers
+        # can safely read the photo record.
+        pending_dispatch: list[tuple[str, str]] = []
+
+        for abs_path in discover_files(photos_dir):
+            stats["total_found"] += 1
+            i = stats["total_found"]
             rel_path = os.path.relpath(abs_path, photos_dir)
+
             try:
-                # Fast path: file path already known — skip without any disk I/O.
                 if rel_path in existing_paths:
                     stats["skipped_existing"] += 1
                     continue
 
-                # New path — compute hash to detect renamed/moved duplicates.
                 file_hash = compute_file_hash(abs_path)
 
-                # Skip if already indexed under a different path (moved file).
                 if file_hash in existing_hashes:
                     stats["skipped_existing"] += 1
                     if i % 100 == 0:
-                        logger.info("[%d/%d] Skipping (moved/renamed): %s", i, total_found, rel_path)
+                        logger.info("[%d] Skipping (moved/renamed): %s", i, rel_path)
                     continue
 
-                # Extract EXIF metadata
                 meta = extract_metadata(abs_path)
 
-                # Build photo record
                 photo = Photo(
                     file_path=rel_path,
                     file_name=os.path.basename(abs_path),
@@ -145,34 +142,31 @@ def scan_library(user_id: str, dry_run: bool = False) -> dict:
                     is_processed=False,
                 )
                 db.add(photo)
-                db.flush()  # get photo.id
+                db.flush()
 
-                # Generate thumbnails
-                photo_id_str = str(photo.id)
-                try:
-                    thumbs = generate_thumbnails(photo_id_str, abs_path)
-                    photo.thumb_sm = thumbs.get("sm")
-                    photo.thumb_md = thumbs.get("md")
-                    photo.thumb_lg = thumbs.get("lg")
-                    photo.is_processed = True
-                except Exception:
-                    logger.warning("Thumbnail generation failed for %s", rel_path, exc_info=True)
-
+                pending_dispatch.append((str(photo.id), rel_path))
                 existing_hashes.add(file_hash)
                 stats["new_indexed"] += 1
 
-                if i % 50 == 0:
+                if stats["new_indexed"] % _BATCH_SIZE == 0:
                     db.commit()
-                    logger.info("[%d/%d] Indexed: %s", i, total_found, rel_path)
+                    # Clear the identity map so processed Photo objects can be GC'd.
+                    db.expunge_all()
+                    _dispatch_batch(pending_dispatch)
+                    pending_dispatch.clear()
+                    gc.collect()
+                    logger.info("[%d found] Indexed %d new photos so far", i, stats["new_indexed"])
 
             except Exception:
                 stats["errors"] += 1
                 logger.error("Error processing %s", rel_path, exc_info=True)
                 db.rollback()
-                continue
+                pending_dispatch.clear()
 
-        # Final commit
+        # Final commit + dispatch for the last partial batch
         db.commit()
+        db.expunge_all()
+        _dispatch_batch(pending_dispatch)
 
     finally:
         db.close()
@@ -186,8 +180,20 @@ def scan_library(user_id: str, dry_run: bool = False) -> dict:
     return stats
 
 
+def _dispatch_batch(pairs: list[tuple[str, str]]) -> None:
+    """Dispatch the Celery processing pipeline for a list of (photo_id, rel_path) pairs."""
+    if not pairs:
+        return
+    try:
+        from app.workers.pipeline import dispatch_photo_pipeline
+        for photo_id, rel_path in pairs:
+            dispatch_photo_pipeline(photo_id, rel_path)
+    except Exception:
+        logger.warning("Failed to dispatch pipeline tasks for batch", exc_info=True)
+
+
 def _get_or_create_admin_user() -> str:
-    """Get the admin user's ID, creating if necessary."""
+    """Return the admin user's ID, creating the account if it doesn't exist."""
     from app.core.security import hash_password
 
     db = get_sync_db()
@@ -195,11 +201,8 @@ def _get_or_create_admin_user() -> str:
         result = db.execute(select(User).where(User.role == "admin"))
         user = result.scalar_one_or_none()
         if user:
-            user_id = str(user.id)
-            db.close()
-            return user_id
+            return str(user.id)
 
-        # Create admin user
         user = User(
             username=settings.admin_username,
             email=settings.admin_email,
@@ -208,28 +211,20 @@ def _get_or_create_admin_user() -> str:
         )
         db.add(user)
         db.commit()
-        user_id = str(user.id)
-        logger.info("Created admin user: %s (id=%s)", settings.admin_username, user_id)
-        db.close()
-        return user_id
+        logger.info("Created admin user: %s (id=%s)", settings.admin_username, user.id)
+        return str(user.id)
     except Exception:
         db.rollback()
-        db.close()
         raise
+    finally:
+        db.close()
 
 
 def main():
     """CLI entry point."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     dry_run = "--dry" in sys.argv
-
-    # Ensure tables exist
     Base.metadata.create_all(bind=sync_engine)
-
     user_id = _get_or_create_admin_user()
     stats = scan_library(user_id=user_id, dry_run=dry_run)
     print(f"\nScan results: {stats}")

@@ -6,7 +6,6 @@ import { useLibrarySummary, useEventClusters } from '../hooks/usePhotos';
 import Spinner from '../components/common/Spinner';
 import EmptyState from '../components/common/EmptyState';
 import { getThumbnailUrl } from '../api/photos';
-import AuthImage from '../components/common/AuthImage';
 import type { YearSummary, MonthSummary, EventClusterSummary } from '../types/photo';
 
 type View = 'years' | 'months' | 'all';
@@ -31,11 +30,12 @@ function YearCard({
       className="relative overflow-hidden rounded-2xl aspect-square group focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
     >
       {year.cover_photo ? (
-        <AuthImage
-          src={getThumbnailUrl(year.cover_photo.id, 'md')}
+        <img
+          src={getThumbnailUrl(year.cover_photo.id, 'md', year.cover_photo.thumb_md ?? year.cover_photo.thumb_sm)}
           alt={String(year.year)}
           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
           loading="eager"
+          decoding="async"
         />
       ) : (
         <div className="w-full h-full bg-gray-200 animate-pulse" />
@@ -75,11 +75,12 @@ function MonthCard({
           return (
             <div key={i} className="overflow-hidden bg-gray-100">
               {p ? (
-                <AuthImage
-                  src={getThumbnailUrl(p.id, 'sm')}
+                <img
+                  src={getThumbnailUrl(p.id, 'sm', p.thumb_sm)}
                   alt=""
                   className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
                   loading="lazy"
+                  decoding="async"
                 />
               ) : (
                 <div className="w-full h-full bg-gray-100" />
@@ -118,11 +119,12 @@ function EventFolderCard({
     >
       <div className="mb-3 overflow-hidden rounded-xl bg-gray-100 aspect-[4/3]">
         {cluster.cover_photo ? (
-          <AuthImage
-            src={getThumbnailUrl(cluster.cover_photo.id, 'md')}
+          <img
+            src={getThumbnailUrl(cluster.cover_photo.id, 'md', cluster.cover_photo.thumb_md ?? cluster.cover_photo.thumb_sm)}
             alt={title}
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
             loading="lazy"
+            decoding="async"
           />
         ) : (
           <div className="h-full w-full bg-gray-200" />
@@ -195,11 +197,6 @@ export default function LibraryPage() {
     [navigate],
   );
 
-  const setView = useCallback(
-    (v: View) => setSearchParams(v === 'all' ? { view: 'all' } : { view: v }),
-    [setSearchParams],
-  );
-
   // Show spinner only for the active view's data source
   const isLoading =
     (view === 'years' || view === 'months') ? summaryLoading : eventsLoading;
@@ -213,34 +210,7 @@ export default function LibraryPage() {
     return <EmptyState title="No photos yet" description="Add photos to your library to get started" />;
 
   return (
-    <div className="flex flex-col relative">
-      {/* ── Sticky tab bar ── */}
-      <div className="sticky top-0 z-20 -mx-4 px-4 py-3 mb-6 bg-white/95 backdrop-blur-sm border-b border-gray-100 grid items-center"
-        style={{ gridTemplateColumns: '1fr auto 1fr' }}
-      >
-        {/* Left: title */}
-        <h1 className="text-lg font-semibold text-gray-900">Library</h1>
-
-        {/* Centre: tab switcher */}
-        <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-1">
-          {(['years', 'months', 'all'] as View[]).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
-                view === v
-                  ? 'bg-white text-gray-900 shadow-sm'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              {v === 'years' ? 'Years' : v === 'months' ? 'Months' : 'All Photos'}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex justify-end" />
-      </div>
-
+    <div className="flex flex-col">
       {/* ── Years view ── */}
       {view === 'years' && summary && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">

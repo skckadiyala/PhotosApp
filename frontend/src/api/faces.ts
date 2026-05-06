@@ -41,6 +41,11 @@ export async function deleteFace(faceId: string): Promise<{ message: string }> {
   return data;
 }
 
+export async function mergePeople(targetId: string, sourceIds: string[]): Promise<Person> {
+  const { data } = await api.post(`/people/${targetId}/merge`, { source_ids: sourceIds });
+  return data;
+}
+
 // ---------- Face confirmation ----------
 
 export interface FaceConfirmItem {
